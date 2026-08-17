@@ -1,0 +1,18 @@
+{
+  "format": "indexjack-policy/1",
+  "kind": "report-format",
+  "entries": [
+    {
+      "key": "divider",
+      "value": "equals"
+    },
+    {
+      "key": "field_case",
+      "value": "lower"
+    },
+    {
+      "key": "title_style",
+      "value": "upper"
+    }
+  ]
+}

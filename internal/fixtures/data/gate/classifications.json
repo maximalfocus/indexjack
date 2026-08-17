@@ -1,0 +1,14 @@
+{
+  "format": "indexjack-classification/1",
+  "summary": "The release gate's own fixed record of what each candidate is. It is held by the gate, never by a package artifact, so a later step can compare what the resolved dependency said with what the gate already knew.",
+  "entries": [
+    {
+      "candidate_id": "MODEL-CANDIDATE-04",
+      "classification": "release_ready"
+    },
+    {
+      "candidate_id": "MODEL-CANDIDATE-17",
+      "classification": "known_unsafe"
+    }
+  ]
+}

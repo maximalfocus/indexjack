@@ -1,0 +1,9 @@
+{
+  "format": "indexjack-registry-fixtures/1",
+  "id": "glasswing-private-missing",
+  "role": "private",
+  "revision": "glasswing-private-missing/1",
+  "host": "packages-missing.private.example",
+  "port": 8080,
+  "packages": []
+}

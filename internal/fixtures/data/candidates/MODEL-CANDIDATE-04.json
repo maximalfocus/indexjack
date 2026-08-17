@@ -1,0 +1,8 @@
+{
+  "format": "indexjack-candidate/1",
+  "id": "MODEL-CANDIDATE-04",
+  "family": "glasswing-lantern",
+  "submitted_by": "glasswing-model-works",
+  "evaluation_inputs": "glasswing-eval-suite-a",
+  "summary": "Inert fictional candidate record. It carries no weights, no runtime, no prompt, and no reference to anything outside this demonstration. Nothing about it changes between runs."
+}

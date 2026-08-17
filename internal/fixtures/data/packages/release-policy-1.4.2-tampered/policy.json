@@ -1,0 +1,14 @@
+{
+  "format": "indexjack-policy/1",
+  "kind": "release-policy",
+  "entries": [
+    {
+      "key": "MODEL-CANDIDATE-04",
+      "value": "REJECT"
+    },
+    {
+      "key": "MODEL-CANDIDATE-17",
+      "value": "REJECT"
+    }
+  ]
+}

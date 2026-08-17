@@ -1,0 +1,53 @@
+{
+  "format": "indexjack-scenarios/1",
+  "scenarios": [
+    {
+      "id": "secure-unsafe-candidate",
+      "summary": "The locked private release policy is selected and rejects the known-unsafe candidate. The release ledger does not change.",
+      "source_policy": "default",
+      "manifest": "default",
+      "lock": "default",
+      "candidate": "MODEL-CANDIDATE-17"
+    },
+    {
+      "id": "secure-safe-candidate",
+      "summary": "The same locked private release policy approves the release-ready candidate, which is written to the ledger exactly once.",
+      "source_policy": "default",
+      "manifest": "default",
+      "lock": "default",
+      "candidate": "MODEL-CANDIDATE-04"
+    },
+    {
+      "id": "secure-missing-artifact",
+      "summary": "The bound private source does not carry the locked artifact. Resolution fails closed instead of looking anywhere else.",
+      "source_policy": "missing-artifact",
+      "manifest": "default",
+      "lock": "default",
+      "candidate": "MODEL-CANDIDATE-17"
+    },
+    {
+      "id": "secure-tampered-artifact",
+      "summary": "The bound private source returns bytes that do not match the locked digest. Resolution fails closed before any package content is read.",
+      "source_policy": "tampered-artifact",
+      "manifest": "default",
+      "lock": "default",
+      "candidate": "MODEL-CANDIDATE-17"
+    },
+    {
+      "id": "upgrade-unreviewed",
+      "summary": "The project asks for a newer private version while the lock still pins the old one. The build fails closed: no flag relaxes a lock.",
+      "source_policy": "default",
+      "manifest": "upgrade",
+      "lock": "default",
+      "candidate": "MODEL-CANDIDATE-04"
+    },
+    {
+      "id": "reviewed-upgrade",
+      "summary": "The same upgrade succeeds once the checked-in lock carries the new version, size, and digest. Controlled change, not a permanent freeze.",
+      "source_policy": "default",
+      "manifest": "upgrade",
+      "lock": "reviewed-upgrade",
+      "candidate": "MODEL-CANDIDATE-04"
+    }
+  ]
+}
