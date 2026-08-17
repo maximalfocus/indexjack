@@ -70,12 +70,16 @@ type Options struct {
 
 // Outcome is everything one run observed.
 type Outcome struct {
-	Scenario       fixtures.Scenario
-	ClientResult   string
-	Project        string
-	Resolutions    []*resolver.Resolution
-	ReleasePolicy  *resolver.Resolution
-	ReportFormat   *resolver.Resolution
+	Scenario      fixtures.Scenario
+	ClientResult  string
+	Project       string
+	Resolutions   []*resolver.Resolution
+	ReleasePolicy *resolver.Resolution
+	ReportFormat  *resolver.Resolution
+	// Attempted is the dependency the build failed on, as far as resolution
+	// got. It records what was asked and who was contacted even though nothing
+	// was accepted.
+	Attempted      *resolver.Resolution
 	Verdict        string
 	Classification string
 	Mutation       string
@@ -169,6 +173,7 @@ func Execute(ctx context.Context, opts Options) (*Outcome, error) {
 			}
 			out.ClientResult = ResultBuildFailed
 			out.Failure = failure
+			out.Attempted = resolution
 			if emitErr := sink.Emit(audit.Event{
 				Event:           audit.EventBuildFailed,
 				Stage:           failure.Stage,

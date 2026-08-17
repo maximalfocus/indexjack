@@ -117,10 +117,10 @@ func Render(w io.Writer, out *releasegate.Outcome) error {
 	for _, res := range out.Resolutions {
 		renderResolution(p, res)
 	}
-	if len(out.Resolutions) == 0 {
-		p.line("%s", style.title("dependency resolution"))
-		p.field("resolved dependencies", "none — the build failed closed on its first dependency")
-		p.line("")
+	// The dependency the build stopped on is shown too: its policy, query set
+	// and candidates are what explain the failure.
+	if out.Attempted != nil {
+		renderResolution(p, out.Attempted)
 	}
 
 	p.line("%s", style.title("release decision"))
@@ -190,6 +190,12 @@ func renderResolution(p *printer, res *resolver.Resolution) {
 			labelWidth, p.style.field(label)+colonIf(label), c.Source, c.Version, c.Size, c.SHA256)
 	}
 	p.field("selection rule", "%s", resolver.SelectionRule)
+	if res.Selected.Source == "" {
+		p.field("selected origin", "none — nothing was accepted")
+		p.field("integrity verdict", "not reached — no artifact content was read")
+		p.line("")
+		return
+	}
 	p.field("selected origin", "%s (%s)", res.Selected.Source, res.Policy.Bound.Role)
 	p.field("selected version", "%s", res.Selected.Version)
 	p.field("selected size", "%d bytes", res.Size)

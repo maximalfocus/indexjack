@@ -21,6 +21,7 @@ import (
 	"indexjack/internal/audit"
 	"indexjack/internal/containment"
 	"indexjack/internal/fixtures"
+	"indexjack/internal/harness"
 	"indexjack/internal/ledger"
 	"indexjack/internal/pkgarchive"
 	"indexjack/internal/registry"
@@ -69,6 +70,10 @@ type expectation struct {
 	failureClass    string
 	failureStage    string
 	reportResolved  bool
+	reconciliation  string
+	// receipts is the exact number of requests each registry must report
+	// having received, from its own signed account of the run.
+	receipts map[string]int
 }
 
 // expectations is the checked-in outcome of every enumerated scenario. Values
@@ -85,6 +90,8 @@ var expectations = []expectation{
 		ledgerEntries:   0,
 		auditEvents:     []string{audit.EventReleaseRejected},
 		reportResolved:  true,
+		reconciliation:  harness.ReconcilePass,
+		receipts:        map[string]int{"glasswing-private": 2, "community-public": 2, "glasswing-private-missing": 0, "glasswing-private-tampered": 0},
 	},
 	{
 		scenario:        "secure-safe-candidate",
@@ -97,36 +104,44 @@ var expectations = []expectation{
 		ledgerEntries:   1,
 		auditEvents:     []string{audit.EventReleaseApproved},
 		reportResolved:  true,
+		reconciliation:  harness.ReconcilePass,
+		receipts:        map[string]int{"glasswing-private": 2, "community-public": 2, "glasswing-private-missing": 0, "glasswing-private-tampered": 0},
 	},
 	{
-		scenario:      "secure-missing-artifact",
-		clientResult:  releasegate.ResultBuildFailed,
-		mutation:      releasegate.MutationNone,
-		ledgerChanged: false,
-		ledgerEntries: 0,
-		auditEvents:   []string{audit.EventBuildFailed},
-		failureClass:  resolver.ClassArtifactUnavailable,
-		failureStage:  resolver.StageRegistryQuery,
+		scenario:       "secure-missing-artifact",
+		clientResult:   releasegate.ResultBuildFailed,
+		mutation:       releasegate.MutationNone,
+		ledgerChanged:  false,
+		ledgerEntries:  0,
+		auditEvents:    []string{audit.EventBuildFailed},
+		failureClass:   resolver.ClassArtifactUnavailable,
+		failureStage:   resolver.StageRegistryQuery,
+		reconciliation: harness.ReconcilePass,
+		receipts:       map[string]int{"glasswing-private": 0, "community-public": 0, "glasswing-private-missing": 1, "glasswing-private-tampered": 0},
 	},
 	{
-		scenario:      "secure-tampered-artifact",
-		clientResult:  releasegate.ResultBuildFailed,
-		mutation:      releasegate.MutationNone,
-		ledgerChanged: false,
-		ledgerEntries: 0,
-		auditEvents:   []string{audit.EventBuildFailed},
-		failureClass:  resolver.ClassArtifactDigestMismatch,
-		failureStage:  resolver.StageIntegrity,
+		scenario:       "secure-tampered-artifact",
+		clientResult:   releasegate.ResultBuildFailed,
+		mutation:       releasegate.MutationNone,
+		ledgerChanged:  false,
+		ledgerEntries:  0,
+		auditEvents:    []string{audit.EventBuildFailed},
+		failureClass:   resolver.ClassArtifactDigestMismatch,
+		failureStage:   resolver.StageIntegrity,
+		reconciliation: harness.ReconcilePass,
+		receipts:       map[string]int{"glasswing-private": 0, "community-public": 0, "glasswing-private-missing": 0, "glasswing-private-tampered": 2},
 	},
 	{
-		scenario:      "upgrade-unreviewed",
-		clientResult:  releasegate.ResultBuildFailed,
-		mutation:      releasegate.MutationNone,
-		ledgerChanged: false,
-		ledgerEntries: 0,
-		auditEvents:   []string{audit.EventBuildFailed},
-		failureClass:  resolver.ClassLockRangeConflict,
-		failureStage:  resolver.StageLock,
+		scenario:       "upgrade-unreviewed",
+		clientResult:   releasegate.ResultBuildFailed,
+		mutation:       releasegate.MutationNone,
+		ledgerChanged:  false,
+		ledgerEntries:  0,
+		auditEvents:    []string{audit.EventBuildFailed},
+		failureClass:   resolver.ClassLockRangeConflict,
+		failureStage:   resolver.StageLock,
+		reconciliation: harness.ReconcilePass,
+		receipts:       map[string]int{"glasswing-private": 0, "community-public": 0, "glasswing-private-missing": 0, "glasswing-private-tampered": 0},
 	},
 	{
 		scenario:        "reviewed-upgrade",
@@ -139,6 +154,8 @@ var expectations = []expectation{
 		ledgerEntries:   1,
 		auditEvents:     []string{audit.EventReleaseApproved},
 		reportResolved:  true,
+		reconciliation:  harness.ReconcilePass,
+		receipts:        map[string]int{"glasswing-private": 2, "community-public": 2, "glasswing-private-missing": 0, "glasswing-private-tampered": 0},
 	},
 }
 
@@ -202,6 +219,13 @@ func RunAll(ctx context.Context, opts Options) ([]Result, error) {
 			return rec.results, err
 		}
 		responses[want.scenario] = response
+
+		if err := verifyHarness(ctx, rec, opts, want); err != nil {
+			return rec.results, err
+		}
+	}
+	if err := verifyHarnessSurface(ctx, rec, opts); err != nil {
+		return rec.results, err
 	}
 
 	// Two different failure causes must be indistinguishable to the build's
@@ -460,6 +484,146 @@ func verifyScenario(ctx context.Context, rec *recorder, opts Options, want expec
 		return "", err
 	}
 	return string(response), nil
+}
+
+// verifyHarness runs one scenario through the harness and checks the whole
+// transcript: that it is byte-identical when the scenario is run again, that
+// each registry's own signed receipt matches the expected request count, and
+// that the run reconciles the way it should.
+func verifyHarness(ctx context.Context, rec *recorder, opts Options, want expectation) error {
+	group := "harness:" + want.scenario
+
+	first, err := harness.Run(ctx, harness.Options{
+		ScenarioID: want.scenario,
+		StateDir:   filepath.Join(opts.StateDir, "harness", want.scenario, "first"),
+		Endpoints:  opts.Endpoints,
+	})
+	if err != nil {
+		return err
+	}
+	second, err := harness.Run(ctx, harness.Options{
+		ScenarioID: want.scenario,
+		StateDir:   filepath.Join(opts.StateDir, "harness", want.scenario, "second"),
+		Endpoints:  opts.Endpoints,
+	})
+	if err != nil {
+		return err
+	}
+
+	firstBody, err := first.Bytes()
+	if err != nil {
+		return err
+	}
+	secondBody, err := second.Bytes()
+	if err != nil {
+		return err
+	}
+	rec.add(group, "transcript_byte_identical_between_runs", string(firstBody) == string(secondBody),
+		"%d bytes", len(firstBody))
+
+	transcriptPath := filepath.Join(opts.StateDir, "harness", want.scenario, "first", harness.TranscriptFile)
+	onDisk, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		return err
+	}
+	rec.add(group, "transcript_artifact_written", string(onDisk) == string(firstBody), "%d bytes on disk", len(onDisk))
+
+	rec.expectString(group, "reconciliation", first.Reconciliation.Result, want.reconciliation)
+	rec.expectString(group, "client_result", first.ClientResponse.Result, want.clientResult)
+	rec.expectString(group, "policy_verdict", first.Release.PolicyVerdict, want.verdict)
+	rec.add(group, "ledger_changed", first.Ledger.Changed == want.ledgerChanged,
+		"changed=%v (expected %v)", first.Ledger.Changed, want.ledgerChanged)
+
+	// Each registry's own account of the run, including the ones that were
+	// meant to hear nothing at all.
+	observed := make(map[string]int, len(first.Receipts))
+	for _, receipt := range first.Receipts {
+		observed[receipt.Source] = receipt.RequestCount
+		rec.add(group, "receipt_signed/"+receipt.Source, receipt.SignatureVerified,
+			"signature verified=%v", receipt.SignatureVerified)
+		if receipt.Role == sourcepolicy.RolePublic {
+			for _, request := range receipt.Requests {
+				if strings.HasPrefix(request.Name, "@glasswing/") {
+					rec.add(group, "public_registry_never_asked_about_private_namespace", false,
+						"%s was asked for %q", receipt.Source, request.Name)
+				}
+			}
+		}
+	}
+	for source, count := range want.receipts {
+		got, ok := observed[source]
+		rec.add(group, "observed_requests/"+source, ok && got == count,
+			"%d request(s) (expected %d)", got, count)
+	}
+	publicTotal := 0
+	for _, receipt := range first.Receipts {
+		if receipt.Role == sourcepolicy.RolePublic {
+			publicTotal += receipt.RequestCount
+		}
+	}
+	if want.clientResult == releasegate.ResultBuildFailed {
+		rec.add(group, "no_public_request_after_failing_closed", publicTotal == 0,
+			"%d public request(s)", publicTotal)
+	}
+
+	// A transcript is evidence a learner reads and a reviewer publishes. It must
+	// carry no credential, no address, and no package content.
+	boundary, err := fixtures.ReceiptBoundary()
+	if err != nil {
+		return err
+	}
+	leaks := []string{"://", boundary.Credential, boundary.SigningKey, "BEGIN PRIVATE KEY", "password"}
+	leaked := ""
+	for _, needle := range leaks {
+		if needle != "" && strings.Contains(string(firstBody), needle) {
+			leaked = needle
+		}
+	}
+	rec.add(group, "transcript_carries_no_credential_or_address", leaked == "",
+		"%s", valueOr(leaked, "no credential, address, or package content in the transcript"))
+	return nil
+}
+
+// verifyHarnessSurface checks what the harness refuses and that its matrix
+// covers every enumerated scenario.
+func verifyHarnessSurface(ctx context.Context, rec *recorder, opts Options) error {
+	const group = "harness-surface"
+
+	for _, id := range []string{"", "anything", "../locks/default", "secure-unsafe-candidate "} {
+		_, err := harness.Run(ctx, harness.Options{
+			ScenarioID: id,
+			StateDir:   filepath.Join(opts.StateDir, "harness", "refused"),
+			Endpoints:  opts.Endpoints,
+		})
+		rec.add(group, "refuses_unenumerated_scenario", errors.Is(err, harness.ErrUnknownScenario),
+			"%q → %v", id, err)
+	}
+
+	transcripts, err := harness.Matrix(ctx, harness.Options{
+		StateDir:  filepath.Join(opts.StateDir, "harness", "matrix"),
+		Endpoints: opts.Endpoints,
+	})
+	if err != nil {
+		return err
+	}
+	ids, err := fixtures.ScenarioIDs()
+	if err != nil {
+		return err
+	}
+	covered := make([]string, 0, len(transcripts))
+	for _, t := range transcripts {
+		covered = append(covered, t.Scenario.ID)
+	}
+	rec.add(group, "matrix_covers_every_scenario", strings.Join(covered, ",") == strings.Join(ids, ","),
+		"[%s]", strings.Join(covered, ","))
+
+	if opts.Trace != nil {
+		if err := harness.RenderMatrix(opts.Trace, transcripts); err != nil {
+			return err
+		}
+		fmt.Fprintln(opts.Trace)
+	}
+	return nil
 }
 
 func dialer(opts Options) func(sourcepolicy.Source) (resolver.Fetcher, error) {

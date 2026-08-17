@@ -1,0 +1,6 @@
+{
+  "format": "indexjack-network/1",
+  "summary": "Checked-in fixture credentials for the in-network receipt boundary. These are NOT secrets and protect nothing: they exist so that the registries' request logs are reachable only through an authenticated boundary inside the demonstration network, and so that a receipt is attributable to the registry fixture that issued it. They are meaningless outside this container network, they authorize no write of any kind, and nothing ever prints them.",
+  "receipt_credential": "glasswing-demo-receipt-credential",
+  "receipt_signing_key": "glasswing-demo-receipt-signing-key"
+}

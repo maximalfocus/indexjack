@@ -146,26 +146,25 @@ func Resolve(ctx context.Context, cfg Config, dep buildmanifest.Dependency) (*Re
 		dial = DefaultDial
 	}
 
+	// A resolution record exists from the first step, so a failure can still
+	// say what was asked, what policy decided, and who was contacted. A trace
+	// that goes blank at the moment something goes wrong is not a trace.
+	res := &Resolution{Alias: dep.Alias, Name: dep.Name, Range: dep.Range}
+
 	// 1. Source policy, before anything is contacted.
 	if err := cfg.Policy.Validate(); err != nil {
-		return nil, fail(ClassSourcePolicyInvalid, StageSourcePolicy, err)
+		return res, fail(ClassSourcePolicyInvalid, StageSourcePolicy, err)
 	}
+	res.DisplayOrder = cfg.Policy.DisplayOrder()
 	decision, err := cfg.Policy.Resolve(dep.Name)
 	if err != nil {
 		class := ClassSourcePolicyUnresolved
 		if errors.Is(err, sourcepolicy.ErrAmbiguousMapping) {
 			class = ClassSourcePolicyAmbiguous
 		}
-		return nil, fail(class, StageSourcePolicy, err)
+		return res, fail(class, StageSourcePolicy, err)
 	}
-
-	res := &Resolution{
-		Alias:        dep.Alias,
-		Name:         dep.Name,
-		Range:        dep.Range,
-		DisplayOrder: cfg.Policy.DisplayOrder(),
-		Policy:       decision,
-	}
+	res.Policy = decision
 	for _, s := range decision.Excluded {
 		res.Excluded = append(res.Excluded, s.ID)
 	}
@@ -180,45 +179,45 @@ func Resolve(ctx context.Context, cfg Config, dep buildmanifest.Dependency) (*Re
 		case errors.Is(err, lockfile.ErrDuplicate):
 			class = ClassLockDuplicate
 		}
-		return nil, fail(class, StageLock, err)
+		return res, fail(class, StageLock, err)
 	}
 	res.Locked = record
 	if record.Name != dep.Name {
-		return nil, fail(ClassLockNameMismatch, StageLock,
+		return res, fail(ClassLockNameMismatch, StageLock,
 			fmt.Errorf("lock binds alias %q to %q, manifest declares %q", dep.Alias, record.Name, dep.Name))
 	}
 	if record.Source != decision.Bound.ID {
-		return nil, fail(ClassLockSourceMismatch, StageLock,
+		return res, fail(ClassLockSourceMismatch, StageLock,
 			fmt.Errorf("lock binds %q to source %q, policy binds it to %q", dep.Alias, record.Source, decision.Bound.ID))
 	}
 	depRange, err := semver.ParseRange(dep.Range)
 	if err != nil {
-		return nil, fail(ClassLockRangeConflict, StageLock, err)
+		return res, fail(ClassLockRangeConflict, StageLock, err)
 	}
 	lockedVersion, err := semver.Parse(record.Version)
 	if err != nil {
-		return nil, fail(ClassLockInvalid, StageLock, err)
+		return res, fail(ClassLockInvalid, StageLock, err)
 	}
 	if !depRange.Satisfies(lockedVersion) {
 		// The declared range moved and the lock did not. Nothing here may
 		// silently prefer one over the other: a lock is changed by review.
-		return nil, fail(ClassLockRangeConflict, StageLock,
+		return res, fail(ClassLockRangeConflict, StageLock,
 			fmt.Errorf("manifest requires %s but the lock pins %s", depRange, lockedVersion))
 	}
 
 	// 3. Query exactly one source: the bound one.
 	client, err := dial(decision.Bound)
 	if err != nil {
-		return nil, fail(ClassRegistryUnavailable, StageRegistryQuery, err)
+		return res, fail(ClassRegistryUnavailable, StageRegistryQuery, err)
 	}
 	res.Queried = []string{decision.Bound.ID}
 	meta, err := client.Metadata(ctx, dep.Name)
 	if err != nil {
 		if errors.Is(err, registry.ErrNotFound) {
-			return nil, fail(ClassArtifactUnavailable, StageRegistryQuery,
+			return res, fail(ClassArtifactUnavailable, StageRegistryQuery,
 				fmt.Errorf("source %q does not carry %q", decision.Bound.ID, dep.Name))
 		}
-		return nil, fail(ClassRegistryUnavailable, StageRegistryQuery, err)
+		return res, fail(ClassRegistryUnavailable, StageRegistryQuery, err)
 	}
 	res.Candidates = orderCandidates(decision.Bound.ID, meta)
 
@@ -231,7 +230,7 @@ func Resolve(ctx context.Context, cfg Config, dep buildmanifest.Dependency) (*Re
 		}
 	}
 	if selected == nil {
-		return nil, fail(ClassArtifactUnavailable, StageRegistryQuery,
+		return res, fail(ClassArtifactUnavailable, StageRegistryQuery,
 			fmt.Errorf("source %q does not carry %s@%s", decision.Bound.ID, dep.Name, record.Version))
 	}
 	res.Selected = *selected
@@ -240,17 +239,17 @@ func Resolve(ctx context.Context, cfg Config, dep buildmanifest.Dependency) (*Re
 	raw, err := client.Artifact(ctx, dep.Name, record.Version)
 	if err != nil {
 		if errors.Is(err, registry.ErrNotFound) {
-			return nil, fail(ClassArtifactUnavailable, StageArtifactFetch,
+			return res, fail(ClassArtifactUnavailable, StageArtifactFetch,
 				fmt.Errorf("source %q does not carry %s@%s", decision.Bound.ID, dep.Name, record.Version))
 		}
-		return nil, fail(ClassRegistryUnavailable, StageArtifactFetch, err)
+		return res, fail(ClassRegistryUnavailable, StageArtifactFetch, err)
 	}
 	if err := record.VerifyBytes(raw); err != nil {
 		class := ClassArtifactDigestMismatch
 		if errors.Is(err, lockfile.ErrSizeMismatch) {
 			class = ClassArtifactSizeMismatch
 		}
-		return nil, fail(class, StageIntegrity, err)
+		return res, fail(class, StageIntegrity, err)
 	}
 	res.Size = int64(len(raw))
 	res.Digest = pkgarchive.Digest(raw)
@@ -259,10 +258,10 @@ func Resolve(ctx context.Context, cfg Config, dep buildmanifest.Dependency) (*Re
 	// 6. Only now may the bytes be read, and only as data.
 	pkg, err := pkgarchive.Parse(raw)
 	if err != nil {
-		return nil, fail(ClassArtifactMalformed, StageArtifactParse, err)
+		return res, fail(ClassArtifactMalformed, StageArtifactParse, err)
 	}
 	if pkg.Manifest.Name != dep.Name || pkg.Manifest.Version != record.Version {
-		return nil, fail(ClassManifestMismatch, StageArtifactParse,
+		return res, fail(ClassManifestMismatch, StageArtifactParse,
 			fmt.Errorf("artifact declares %s@%s, lock binds %s@%s",
 				pkg.Manifest.Name, pkg.Manifest.Version, dep.Name, record.Version))
 	}
