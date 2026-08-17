@@ -10,6 +10,10 @@ package registry
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -29,24 +33,34 @@ import (
 // Wire formats and headers.
 const (
 	MetadataFormat = "indexjack-registry-metadata/1"
+	ReceiptFormat  = "indexjack-registry-receipt/1"
 
 	HeaderRole     = "X-Indexjack-Registry-Role"
 	HeaderRevision = "X-Indexjack-Fixture-Revision"
 	HeaderSource   = "X-Indexjack-Source-Id"
+	HeaderRunID    = "X-Indexjack-Run-Id"
 
 	MetadataPath = "/v1/metadata"
 	ArtifactPath = "/v1/artifact"
+	ReceiptPath  = "/v1/receipts"
+
+	// receiptScheme is the authorization scheme of the in-network fixture
+	// boundary. The credential it carries is a checked-in fixture value, not a
+	// secret.
+	receiptScheme = "Fixture"
 
 	maxMetadataBytes = 64 << 10
 	maxArtifactBytes = 256 << 10
+	maxReceiptBytes  = 256 << 10
 )
 
 // Stable client errors.
 var (
-	ErrNotFound    = errors.New("registry has no such artifact")
-	ErrUnavailable = errors.New("registry unavailable")
-	ErrProtocol    = errors.New("registry response is not valid fixture protocol")
-	ErrDisallowed  = errors.New("registry host is outside the demonstration network")
+	ErrNotFound     = errors.New("registry has no such artifact")
+	ErrUnavailable  = errors.New("registry unavailable")
+	ErrProtocol     = errors.New("registry response is not valid fixture protocol")
+	ErrDisallowed   = errors.New("registry host is outside the demonstration network")
+	ErrUnauthorized = errors.New("registry refused the fixture credential")
 )
 
 // VersionInfo is one published version.
@@ -94,24 +108,52 @@ type FixtureSet struct {
 // rather than trusting a client's own account of what it did, is what makes
 // "the public registry was never asked" an observed fact.
 type Request struct {
-	Method  string
-	Path    string
-	Name    string
-	Version string
-	Status  int
+	Method  string `json:"method"`
+	Path    string `json:"path"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Status  int    `json:"status"`
+}
+
+// Receipt is a registry's own signed statement of what one run asked it.
+//
+// It is the answer to "who did you talk to?" given by the party that was
+// talked to. A run that queried nothing gets a signed receipt saying exactly
+// that, which is what makes a zero count evidence rather than an absence of
+// evidence.
+type Receipt struct {
+	Format       string    `json:"format"`
+	Source       string    `json:"source"`
+	Role         string    `json:"role"`
+	Revision     string    `json:"revision"`
+	Run          string    `json:"run"`
+	RequestCount int       `json:"request_count"`
+	Requests     []Request `json:"requests"`
+	Signature    string    `json:"signature"`
+}
+
+// ReceiptConfig holds the checked-in fixture credentials of the in-network
+// receipt boundary. Neither value is a secret: they exist so the boundary is
+// authenticated and so a receipt is attributable to the registry that issued
+// it.
+type ReceiptConfig struct {
+	Credential string
+	SigningKey string
 }
 
 // Handler serves one immutable fixture set.
 type Handler struct {
-	set FixtureSet
+	set      FixtureSet
+	receipts ReceiptConfig
 
 	mu       sync.Mutex
 	requests []Request
+	byRun    map[string][]Request
 }
 
 // NewHandler returns a read-only handler for set.
-func NewHandler(set FixtureSet) *Handler {
-	return &Handler{set: set}
+func NewHandler(set FixtureSet, receipts ReceiptConfig) *Handler {
+	return &Handler{set: set, receipts: receipts, byRun: map[string][]Request{}}
 }
 
 // Requests returns the requests observed so far, oldest first.
@@ -123,17 +165,30 @@ func (h *Handler) Requests() []Request {
 	return out
 }
 
+// RunRequests returns the requests one run made, oldest first.
+func (h *Handler) RunRequests(run string) []Request {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]Request, len(h.byRun[run]))
+	copy(out, h.byRun[run])
+	return out
+}
+
 // Reset clears the observed requests. It never changes what is served.
 func (h *Handler) Reset() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.requests = nil
+	h.byRun = map[string][]Request{}
 }
 
-func (h *Handler) record(r Request) {
+func (h *Handler) record(r Request, run string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.requests = append(h.requests, r)
+	if run != "" {
+		h.byRun[run] = append(h.byRun[run], r)
+	}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -143,8 +198,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 
+	run := r.Header.Get(HeaderRunID)
 	req := Request{Method: r.Method, Path: r.URL.Path}
-	defer func() { h.record(req) }()
+	// Reading a receipt is not a query about a package, and recording it would
+	// make observing a run change what the run observed.
+	if r.URL.Path != ReceiptPath {
+		defer func() { h.record(req, run) }()
+	}
 
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		req.Status = http.StatusMethodNotAllowed
@@ -212,10 +272,97 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(req.Status)
 		_, _ = w.Write(artifact.Bytes)
 
+	case ReceiptPath:
+		h.serveReceipt(w, r, query)
+
 	default:
 		req.Status = http.StatusNotFound
 		writeStatus(w, req.Status, "not_found")
 	}
+}
+
+// serveReceipt answers, over an authenticated in-network boundary, what one run
+// asked this registry. It is read-only in the strongest sense: it reports
+// observations and changes nothing, including its own observations.
+func (h *Handler) serveReceipt(w http.ResponseWriter, r *http.Request, query url.Values) {
+	if h.receipts.Credential == "" || h.receipts.SigningKey == "" {
+		writeStatus(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if !credentialMatches(r.Header.Get("Authorization"), h.receipts.Credential) {
+		writeStatus(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	run, ok := single(query, "run")
+	if !ok || len(query) != 1 {
+		writeStatus(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+
+	// A run this registry never heard from gets a signed receipt saying so.
+	// "Nothing was asked" has to be a statement, not a missing answer.
+	requests := h.RunRequests(run)
+	if requests == nil {
+		requests = []Request{}
+	}
+	receipt := Receipt{
+		Format:       ReceiptFormat,
+		Source:       h.set.ID,
+		Role:         h.set.Role,
+		Revision:     h.set.Revision,
+		Run:          run,
+		RequestCount: len(requests),
+		Requests:     requests,
+	}
+	signature, err := SignReceipt(receipt, h.receipts.SigningKey)
+	if err != nil {
+		writeStatus(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	receipt.Signature = signature
+	body, err := canonicaljson.Marshal(receipt)
+	if err != nil {
+		writeStatus(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// credentialMatches compares the presented credential in constant time. The
+// value is a checked-in fixture, but comparing it sloppily would teach the
+// wrong habit.
+func credentialMatches(header, expected string) bool {
+	scheme, presented, found := strings.Cut(header, " ")
+	if !found || scheme != receiptScheme {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(presented)), []byte(expected)) == 1
+}
+
+// SignReceipt derives a receipt's signature. The key is bound to the issuing
+// registry's own id, so a receipt from one registry cannot be presented as a
+// receipt from another.
+func SignReceipt(receipt Receipt, signingKey string) (string, error) {
+	receipt.Signature = ""
+	body, err := canonicaljson.Marshal(receipt)
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, []byte(signingKey+":"+receipt.Source))
+	mac.Write(body)
+	return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+// VerifyReceipt reports whether a receipt carries this fixture boundary's
+// signature for the registry it claims to come from.
+func VerifyReceipt(receipt Receipt, signingKey string) bool {
+	presented := receipt.Signature
+	expected, err := SignReceipt(receipt, signingKey)
+	if err != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(expected)) == 1
 }
 
 // single returns the sole value of key, refusing repeated parameters so a
@@ -279,8 +426,19 @@ func (s *FixtureSet) Sort() error {
 
 // Client is the resolver's view of one registry.
 type Client struct {
-	base *url.URL
-	http *http.Client
+	base  *url.URL
+	http  *http.Client
+	runID string
+}
+
+// Option adjusts a client.
+type Option func(*Client)
+
+// WithRunID labels every request with a run id so the registry can report,
+// per run, exactly what it was asked. The id identifies one execution and
+// nothing else; it names no person and appears in no transcript.
+func WithRunID(runID string) Option {
+	return func(c *Client) { c.runID = runID }
 }
 
 // NewClient returns a client for base.
@@ -289,7 +447,7 @@ type Client struct {
 // or loopback. There is no way to point this client at an arbitrary host, and
 // redirects are refused because following one would silently change the source
 // an artifact came from.
-func NewClient(base string) (*Client, error) {
+func NewClient(base string, opts ...Option) (*Client, error) {
 	u, err := url.Parse(base)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrDisallowed, err)
@@ -300,7 +458,7 @@ func NewClient(base string) (*Client, error) {
 	if !allowedHost(u.Hostname()) {
 		return nil, fmt.Errorf("%w: host %q", ErrDisallowed, u.Hostname())
 	}
-	return &Client{
+	client := &Client{
 		base: u,
 		http: &http.Client{
 			Timeout: 10 * time.Second,
@@ -314,7 +472,11 @@ func NewClient(base string) (*Client, error) {
 				DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
 			},
 		},
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(client)
+	}
+	return client, nil
 }
 
 // allowedHost accepts only in-network fixture labels and loopback. `.example`
@@ -349,13 +511,47 @@ func (c *Client) Artifact(ctx context.Context, name, version string) ([]byte, er
 	return c.get(ctx, ArtifactPath, url.Values{"name": {name}, "version": {version}}, maxArtifactBytes)
 }
 
-func (c *Client) get(ctx context.Context, path string, query url.Values, limit int64) ([]byte, error) {
+// Receipt asks the registry what the given run asked it. The credential is the
+// checked-in in-network fixture value; it authorizes reading observations and
+// nothing else.
+func (c *Client) Receipt(ctx context.Context, run, credential string) (Receipt, error) {
+	body, err := c.get(ctx, ReceiptPath, url.Values{"run": {run}}, maxReceiptBytes,
+		header{"Authorization", receiptScheme + " " + credential})
+	if err != nil {
+		return Receipt{}, err
+	}
+	var receipt Receipt
+	if err := canonicaljson.Unmarshal(body, &receipt); err != nil {
+		return Receipt{}, fmt.Errorf("%w: %v", ErrProtocol, err)
+	}
+	if receipt.Format != ReceiptFormat || receipt.Run != run {
+		return Receipt{}, fmt.Errorf("%w: unexpected receipt for run", ErrProtocol)
+	}
+	if receipt.Requests == nil {
+		receipt.Requests = []Request{}
+	}
+	if receipt.RequestCount != len(receipt.Requests) {
+		return Receipt{}, fmt.Errorf("%w: receipt count %d does not match %d listed requests",
+			ErrProtocol, receipt.RequestCount, len(receipt.Requests))
+	}
+	return receipt, nil
+}
+
+type header struct{ key, value string }
+
+func (c *Client) get(ctx context.Context, path string, query url.Values, limit int64, headers ...header) ([]byte, error) {
 	target := *c.base
 	target.Path = path
 	target.RawQuery = query.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	if c.runID != "" {
+		req.Header.Set(HeaderRunID, c.runID)
+	}
+	for _, h := range headers {
+		req.Header.Set(h.key, h.value)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -369,6 +565,8 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, limit i
 	case http.StatusOK:
 	case http.StatusNotFound:
 		return nil, ErrNotFound
+	case http.StatusUnauthorized:
+		return nil, ErrUnauthorized
 	default:
 		return nil, fmt.Errorf("%w: status %d", ErrUnavailable, resp.StatusCode)
 	}

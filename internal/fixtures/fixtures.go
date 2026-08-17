@@ -36,7 +36,38 @@ const (
 	classificationFormat = "indexjack-classification/1"
 	registryFormat       = "indexjack-registry-fixtures/1"
 	scenarioFormat       = "indexjack-scenarios/1"
+	networkFormat        = "indexjack-network/1"
 )
+
+type networkDoc struct {
+	Format            string `json:"format"`
+	Summary           string `json:"summary"`
+	ReceiptCredential string `json:"receipt_credential"`
+	ReceiptSigningKey string `json:"receipt_signing_key"`
+}
+
+// ReceiptBoundary returns the checked-in fixture credentials of the in-network
+// receipt boundary.
+//
+// These are not secrets and are deliberately checked in: they exist so that the
+// registries' observations are reachable only through an authenticated boundary
+// inside the demonstration network, and so that a receipt is attributable to
+// the fixture registry that issued it. They authorize reading observations and
+// nothing else, they mean nothing outside this network, and nothing prints
+// them.
+func ReceiptBoundary() (registry.ReceiptConfig, error) {
+	var doc networkDoc
+	if err := read("network.json", &doc); err != nil {
+		return registry.ReceiptConfig{}, err
+	}
+	if doc.Format != networkFormat {
+		return registry.ReceiptConfig{}, fmt.Errorf("%w: network format %q", ErrUnknownFixture, doc.Format)
+	}
+	if doc.ReceiptCredential == "" || doc.ReceiptSigningKey == "" {
+		return registry.ReceiptConfig{}, fmt.Errorf("%w: receipt boundary is incomplete", ErrUnknownFixture)
+	}
+	return registry.ReceiptConfig{Credential: doc.ReceiptCredential, SigningKey: doc.ReceiptSigningKey}, nil
+}
 
 // Candidate classifications held by the release gate.
 const (

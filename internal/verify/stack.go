@@ -37,6 +37,10 @@ func StartStack() (*Stack, error) {
 		return nil, err
 	}
 	sort.Strings(ids)
+	boundary, err := fixtures.ReceiptBoundary()
+	if err != nil {
+		return nil, err
+	}
 
 	stack := &Stack{
 		Endpoints: make(map[string]string, len(ids)),
@@ -58,7 +62,7 @@ func StartStack() (*Stack, error) {
 			stack.Close()
 			return nil, err
 		}
-		handler := registry.NewHandler(set)
+		handler := registry.NewHandler(set, boundary)
 		server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 		go func() {
 			if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {

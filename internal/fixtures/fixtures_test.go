@@ -194,3 +194,25 @@ func TestPolicyKindsAreOnlyTheEnumeratedOnes(t *testing.T) {
 		}
 	}
 }
+
+func TestReceiptBoundaryIsCheckedInAndComplete(t *testing.T) {
+	boundary, err := ReceiptBoundary()
+	if err != nil {
+		t.Fatalf("ReceiptBoundary: %v", err)
+	}
+	if boundary.Credential == "" || boundary.SigningKey == "" {
+		t.Fatalf("boundary = %+v", boundary)
+	}
+	if boundary.Credential == boundary.SigningKey {
+		t.Fatal("the credential and the signing key are the same value")
+	}
+	// These are fixture values, not secrets, and must not look like a real
+	// credential of any kind.
+	for _, value := range []string{boundary.Credential, boundary.SigningKey} {
+		for _, shape := range []string{"ghp_", "github_pat_", "AKIA", "xox", "sk_live_", "-----BEGIN"} {
+			if strings.Contains(value, shape) {
+				t.Errorf("fixture value %q resembles a real credential (%q)", value, shape)
+			}
+		}
+	}
+}

@@ -16,12 +16,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"indexjack/internal/canonicaljson"
 	"indexjack/internal/fixtures"
+	"indexjack/internal/harness"
 	"indexjack/internal/registry"
 	"indexjack/internal/releasegate"
 	"indexjack/internal/trace"
@@ -37,6 +39,7 @@ const usage = `indexjack — local dependency-confusion demonstration
 usage:
   indexjack registry --fixtures ID [--listen ADDR]   serve one immutable registry fixture set
   indexjack release --scenario ID [--state-dir DIR]  run one enumerated scenario
+  indexjack harness --scenario ID | --matrix         run scenarios and record the full provenance trace
   indexjack verify [--state-dir DIR]                 run the full verification gate
   indexjack scenarios                                list the enumerated scenarios
   indexjack fixtures                                 list the built artifacts and their digests
@@ -66,6 +69,8 @@ func run(args []string) error {
 		return runRegistry(ctx, args[1:])
 	case "release":
 		return runRelease(ctx, args[1:])
+	case "harness":
+		return runHarness(ctx, args[1:])
 	case "verify":
 		return runVerify(ctx, args[1:])
 	case "healthcheck":
@@ -101,10 +106,14 @@ func runRegistry(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	boundary, err := fixtures.ReceiptBoundary()
+	if err != nil {
+		return err
+	}
 
 	server := &http.Server{
 		Addr:              *listen,
-		Handler:           registry.NewHandler(set),
+		Handler:           registry.NewHandler(set, boundary),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -171,6 +180,63 @@ func runRelease(ctx context.Context, args []string) error {
 		return errors.New("build failed closed; see the transcript above")
 	}
 	return nil
+}
+
+func runHarness(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("harness", flag.ContinueOnError)
+	scenarioID := fs.String("scenario", "", "enumerated scenario to run")
+	matrix := fs.Bool("matrix", false, "run every enumerated scenario and print one row each")
+	format := fs.String("format", "human", "transcript form: human or json")
+	stateDir := fs.String("state-dir", defaultStateDir, "disposable directory for run state and transcripts")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *format != "human" && *format != "json" {
+		return fmt.Errorf("--format must be human or json")
+	}
+	if *matrix == (*scenarioID != "") {
+		return errors.New("pass exactly one of --scenario or --matrix")
+	}
+
+	if *matrix {
+		transcripts, err := harness.Matrix(ctx, harness.Options{StateDir: *stateDir})
+		if err != nil {
+			return err
+		}
+		if *format == "json" {
+			body, err := canonicaljson.Marshal(transcripts)
+			if err != nil {
+				return err
+			}
+			fmt.Print(string(body))
+			return nil
+		}
+		return harness.RenderMatrix(os.Stdout, transcripts)
+	}
+
+	ids, err := fixtures.ScenarioIDs()
+	if err != nil {
+		return err
+	}
+	if !contains(ids, *scenarioID) {
+		return fmt.Errorf("--scenario must be one of: %s", strings.Join(ids, ", "))
+	}
+	transcript, err := harness.Run(ctx, harness.Options{
+		ScenarioID: *scenarioID,
+		StateDir:   filepath.Join(*stateDir, "scenarios", *scenarioID),
+	})
+	if err != nil {
+		return err
+	}
+	if *format == "json" {
+		body, err := transcript.Bytes()
+		if err != nil {
+			return err
+		}
+		fmt.Print(string(body))
+		return nil
+	}
+	return harness.Render(os.Stdout, transcript)
 }
 
 func runVerify(ctx context.Context, args []string) error {

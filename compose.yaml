@@ -138,6 +138,9 @@ services:
     networks: [demo]
 
   # Manual exploration, against the same immutable registries:
+  #   docker compose run --rm cli harness --matrix
+  #   docker compose run --rm cli harness --scenario secure-safe-candidate
+  #   docker compose run --rm cli harness --scenario secure-safe-candidate --format json
   #   docker compose run --rm cli release --scenario secure-safe-candidate
   #   docker compose run --rm cli scenarios
   #   docker compose run --rm cli fixtures

@@ -12,8 +12,9 @@ named, probed, or described, and nothing is ever published.
 
 > **This stage of the project delivers the secure half only.** There is no vulnerable resolver and no
 > public shadow package anywhere in this repository yet. What you can run today is the correct
-> behaviour — source binding, lock verification, fail-closed errors — plus the fixtures and evidence
-> the later comparison is built on.
+> behaviour — source binding, lock verification, fail-closed errors — with a full provenance
+> transcript and registry-observed evidence for every run, which is what the later comparison will be
+> measured against.
 
 ## What it shows
 
@@ -58,13 +59,40 @@ The gate takes seconds and asserts, in one pass:
   repeated parameters, and unknown parameters, and identifies its role and fixture revision;
 - **scenarios** — every enumerated scenario produces its exact expected origin, version, digest,
   integrity verdict, policy verdict, ledger bytes, and audit records;
+- **transcripts** — each scenario's transcript is byte-identical between runs, each registry's signed
+  receipt matches the exact expected request count, and no transcript carries a credential, address,
+  or package content;
 - **formatting, vetting and the full test suite**, in a pinned toolchain image through the same
   Compose boundary that CI uses.
 
-## Explore one scenario by hand
+## Explore it by hand
+
+One row per scenario, every column a fact the run observed:
 
 ```sh
-docker compose run --rm cli release --scenario secure-safe-candidate
+docker compose run --rm cli harness --matrix
+```
+
+```
+scenario                  source policy                   queried (observed)                        selected origin    version  digest        integrity    verdict  mutation  ledger                     reconciliation
+secure-unsafe-candidate   @glasswing/*→glasswing-private  community-public(2) glasswing-private(2)  glasswing-private  1.4.2    590ff7b9ff81  verified     REJECT   none      704b56de923e→704b56de923e  PASS
+secure-safe-candidate     @glasswing/*→glasswing-private  community-public(2) glasswing-private(2)  glasswing-private  1.4.2    590ff7b9ff81  verified     APPROVE  approved  704b56de923e→60caa8cb929b  PASS
+secure-missing-artifact   @glasswing/*→glasswing-private  glasswing-private-missing(1)              —                  —        —             not_reached  —        none      704b56de923e→704b56de923e  PASS
+secure-tampered-artifact  @glasswing/*→glasswing-private  glasswing-private-tampered(2)             glasswing-private  1.4.2    —             rejected     —        none      704b56de923e→704b56de923e  PASS
+upgrade-unreviewed        @glasswing/*→glasswing-private  none                                      —                  —        —             not_reached  —        none      704b56de923e→704b56de923e  PASS
+reviewed-upgrade          @glasswing/*→glasswing-private  community-public(2) glasswing-private(2)  glasswing-private  1.5.0    388952376306  verified     APPROVE  approved  704b56de923e→5018fda7bddf  PASS
+```
+
+The **queried** column is not the resolver's account of itself: it is what each registry says it was
+asked, signed and collected through an authenticated in-network boundary. A registry that was asked
+nothing still has to say so.
+
+The full trace of one scenario, or its machine-readable form:
+
+```sh
+docker compose run --rm cli harness --scenario secure-tampered-artifact
+docker compose run --rm cli harness --scenario secure-tampered-artifact --format json
+docker compose run --rm cli release --scenario secure-safe-candidate   # the direct build path
 ```
 
 | Scenario | What it demonstrates |
@@ -77,7 +105,8 @@ docker compose run --rm cli release --scenario secure-safe-candidate
 | `reviewed-upgrade` | The same upgrade succeeds once the checked-in lock carries the new version, size, and digest. |
 
 Scenario ids are the only input the demonstration accepts. There is no way to pass a package name,
-version, registry, URL, artifact, model, or policy from outside, and the two fail-closed scenarios
+version, registry, URL, artifact, model, or policy from outside. The harness reports on a run, so it
+succeeds whatever the build did; `release` is the build itself, so its three fail-closed scenarios
 exit non-zero on purpose.
 
 `docker compose run --rm cli scenarios` lists the ids; `docker compose run --rm cli fixtures` prints
@@ -110,11 +139,13 @@ every artifact's identity.
 | `internal/resolver` | the secure resolution model, in a fixed order that cannot be reordered |
 | `internal/registry` | the immutable fixture registry service and its client |
 | `internal/releasegate` | the release decision and the atomic ledger |
+| `internal/harness` | the named-scenario harness, its transcript, and reconciliation |
 | `internal/verify` | the gate every assertion above comes from |
 | `internal/fixtures` | every checked-in fixture, and the deterministic build of each artifact |
 
 [`docs/RESOLVER.md`](docs/RESOLVER.md) documents the resolver model in full: the ordering rule, the
-tie rule, the lock fields, and the stable error classes.
+tie rule, the lock fields, and the stable error classes. [`docs/TRANSCRIPT.md`](docs/TRANSCRIPT.md)
+documents the transcript, the registry receipt boundary, and how a run reconciles.
 
 The resolver is a deliberately small, documented model of how dependency resolution can work. It is
 **not** a reimplementation of npm, pip, Maven, NuGet, Go modules, Cargo, or any other tool, and this

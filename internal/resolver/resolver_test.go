@@ -38,13 +38,22 @@ func startStack(t *testing.T) *stack {
 		if err != nil {
 			t.Fatalf("RegistryURL(%q): %v", id, err)
 		}
-		handler := registry.NewHandler(set)
+		handler := registry.NewHandler(set, receiptBoundary(t))
 		server := httptest.NewServer(handler)
 		t.Cleanup(server.Close)
 		s.endpoints[checkedIn] = server.URL
 		s.handlers[id] = handler
 	}
 	return s
+}
+
+func receiptBoundary(t *testing.T) registry.ReceiptConfig {
+	t.Helper()
+	boundary, err := fixtures.ReceiptBoundary()
+	if err != nil {
+		t.Fatalf("ReceiptBoundary: %v", err)
+	}
+	return boundary
 }
 
 func (s *stack) dial() func(sourcepolicy.Source) (Fetcher, error) {
