@@ -1,0 +1,158 @@
+# Docker Compose is the only supported way to run this demonstration.
+#
+#   docker compose run --rm --build verify   # build, start the registries, run the whole gate
+#   docker compose down -v                   # tear everything down
+#
+# The runtime network is internal: there is no default gateway, no route to any
+# external host, and no published port. The `.example` hostnames are reserved
+# documentation labels that resolve only through this network's aliases.
+name: indexjack
+
+x-hardened: &hardened
+  build: .
+  image: indexjack:local
+  read_only: true
+  user: "65532:65532"
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  restart: "no"
+
+x-registry-health: &registry-health
+  interval: 2s
+  timeout: 2s
+  retries: 15
+  start_period: 1s
+
+networks:
+  demo:
+    internal: true
+
+services:
+  # The trusted private source for the @glasswing/* namespace.
+  registry-private:
+    <<: *hardened
+    command: ["registry", "--fixtures", "glasswing-private", "--listen", ":8080"]
+    healthcheck:
+      <<: *registry-health
+      test: ["CMD", "/usr/local/bin/indexjack", "healthcheck", "--address", "127.0.0.1:8080"]
+    networks:
+      demo:
+        aliases: [packages.private.example]
+
+  # The same private source, in the state where the locked artifact is absent.
+  registry-private-missing:
+    <<: *hardened
+    command: ["registry", "--fixtures", "glasswing-private-missing", "--listen", ":8080"]
+    healthcheck:
+      <<: *registry-health
+      test: ["CMD", "/usr/local/bin/indexjack", "healthcheck", "--address", "127.0.0.1:8080"]
+    networks:
+      demo:
+        aliases: [packages-missing.private.example]
+
+  # The same private source, in the state where the artifact's bytes no longer
+  # match the lock.
+  registry-private-tampered:
+    <<: *hardened
+    command: ["registry", "--fixtures", "glasswing-private-tampered", "--listen", ":8080"]
+    healthcheck:
+      <<: *registry-health
+      test: ["CMD", "/usr/local/bin/indexjack", "healthcheck", "--address", "127.0.0.1:8080"]
+    networks:
+      demo:
+        aliases: [packages-tampered.private.example]
+
+  # The untrusted publisher domain. In this slice it carries one ordinary public
+  # dependency and nothing from the private namespace.
+  registry-public:
+    <<: *hardened
+    command: ["registry", "--fixtures", "community-public", "--listen", ":8080"]
+    healthcheck:
+      <<: *registry-health
+      test: ["CMD", "/usr/local/bin/indexjack", "healthcheck", "--address", "127.0.0.1:8080"]
+    networks:
+      demo:
+        aliases: [packages.public.example]
+
+  # Formatting, vetting and the full test suite, in a pinned toolchain image
+  # with the source mounted read-only. Everything it writes goes to tmpfs.
+  test:
+    image: golang:1.26-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83
+    working_dir: /src
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+    environment:
+      CGO_ENABLED: "0"
+      GOFLAGS: -mod=readonly
+      GOTOOLCHAIN: local
+      GOCACHE: /tmp/gocache
+      GOMODCACHE: /tmp/gomodcache
+      GOPATH: /tmp/go
+      HOME: /tmp
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        unformatted="$$(gofmt -l .)"
+        if [ -n "$$unformatted" ]; then
+          echo "gofmt reported unformatted files:" >&2
+          echo "$$unformatted" >&2
+          exit 1
+        fi
+        go vet ./...
+        go test ./...
+    volumes:
+      - ./:/src:ro
+    tmpfs:
+      # A toolchain container has to compile and then run test binaries, so this
+      # scratch mount is executable. It is the only mount in the project that
+      # is: the demonstration's own containers never execute anything they
+      # write, and never write anything they execute.
+      - /tmp:mode=1777,exec
+    networks: [demo]
+
+  # The gate: container containment, fixture reproducibility, the registries'
+  # read-only surface, and every enumerated scenario against the real services.
+  verify:
+    <<: *hardened
+    command: ["verify", "--state-dir", "/run/indexjack"]
+    tmpfs:
+      - /run/indexjack:mode=0700,uid=65532,gid=65532
+    depends_on:
+      test:
+        condition: service_completed_successfully
+      registry-private:
+        condition: service_healthy
+      registry-private-missing:
+        condition: service_healthy
+      registry-private-tampered:
+        condition: service_healthy
+      registry-public:
+        condition: service_healthy
+    networks: [demo]
+
+  # Manual exploration, against the same immutable registries:
+  #   docker compose run --rm cli release --scenario secure-safe-candidate
+  #   docker compose run --rm cli scenarios
+  #   docker compose run --rm cli fixtures
+  cli:
+    <<: *hardened
+    command: ["--help"]
+    tmpfs:
+      - /run/indexjack:mode=0700,uid=65532,gid=65532
+    depends_on:
+      registry-private:
+        condition: service_healthy
+      registry-private-missing:
+        condition: service_healthy
+      registry-private-tampered:
+        condition: service_healthy
+      registry-public:
+        condition: service_healthy
+    networks: [demo]

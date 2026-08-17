@@ -1,0 +1,23 @@
+{
+  "format": "indexjack-registry-fixtures/1",
+  "id": "glasswing-private",
+  "role": "private",
+  "revision": "glasswing-private/1",
+  "host": "packages.private.example",
+  "port": 8080,
+  "packages": [
+    {
+      "name": "@glasswing/release-policy",
+      "versions": [
+        {
+          "version": "1.4.2",
+          "package": "release-policy-1.4.2"
+        },
+        {
+          "version": "1.5.0",
+          "package": "release-policy-1.5.0"
+        }
+      ]
+    }
+  ]
+}

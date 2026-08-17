@@ -1,0 +1,26 @@
+name: verify
+
+# CI runs exactly what a contributor runs locally: the same Compose boundary,
+# the same images, the same gate.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the candidate commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build, start the immutable registries, and run the gate
+        run: docker compose run --rm --build verify
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v --remove-orphans

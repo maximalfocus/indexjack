@@ -1,0 +1,27 @@
+{
+  "format": "indexjack-source-policy/1",
+  "sources": [
+    {
+      "id": "glasswing-private",
+      "role": "private",
+      "url": "http://packages.private.example:8080"
+    },
+    {
+      "id": "community-public",
+      "role": "public",
+      "url": "http://packages.public.example:8080"
+    }
+  ],
+  "mappings": [
+    {
+      "pattern": "@glasswing/*",
+      "source": "glasswing-private",
+      "mode": "exclusive"
+    },
+    {
+      "pattern": "community-*",
+      "source": "community-public",
+      "mode": "exclusive"
+    }
+  ]
+}

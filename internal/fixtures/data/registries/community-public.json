@@ -1,0 +1,19 @@
+{
+  "format": "indexjack-registry-fixtures/1",
+  "id": "community-public",
+  "role": "public",
+  "revision": "community-public/1",
+  "host": "packages.public.example",
+  "port": 8080,
+  "packages": [
+    {
+      "name": "community-format",
+      "versions": [
+        {
+          "version": "2.1.0",
+          "package": "community-format-2.1.0"
+        }
+      ]
+    }
+  ]
+}
