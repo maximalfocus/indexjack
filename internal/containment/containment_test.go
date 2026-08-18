@@ -18,6 +18,7 @@ func TestRunReportsEveryClaimedBoundary(t *testing.T) {
 		"no_new_privileges",
 		"capabilities_dropped",
 		"read_only_root_filesystem",
+		"no_interpreter_in_image",
 		"disposable_state_writable",
 		"no_default_route",
 		"external_connection_refused",
@@ -36,15 +37,16 @@ func TestRunReportsEveryClaimedBoundary(t *testing.T) {
 	}
 }
 
-// The demonstration's own containers must pass every check. Elsewhere — a
-// developer workstation, for instance — these assertions are simply about a
+// The demonstration's own runtime image must pass every check. Anywhere else —
+// a developer workstation, or the toolchain container that compiles this test
+// and necessarily has a compiler and a shell — these assertions are about a
 // different environment, so only their shape is asserted above.
 func TestContainerBoundaryHolds(t *testing.T) {
 	if !Supported() {
 		t.Skipf("containment assertions apply to the demonstration's Linux containers, not %s", runtime.GOOS)
 	}
-	if _, err := procStatusValue("NoNewPrivs"); err != nil {
-		t.Skipf("not running under the demonstration's container runtime: %v", err)
+	if !InRuntimeImage() {
+		t.Skipf("not running in the demonstration's runtime image (%s unset)", RuntimeImageEnv)
 	}
 	checks := Run(t.TempDir())
 	if !AllPassed(checks) {

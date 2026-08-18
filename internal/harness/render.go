@@ -63,6 +63,7 @@ func Render(w io.Writer, t *Transcript) error {
 	p.field("summary", "%s", t.Scenario.Summary)
 	p.field("resolver", "%s", t.Resolver)
 	p.field("lock enforcement", "%s", t.LockEnforcement)
+	p.field("lifecycle scripts", "%s", t.LifecycleScripts)
 	p.field("project", "%s", t.Project)
 	p.field("fixtures", "policy=%s manifest=%s lock=%s", t.Scenario.SourcePolicy, t.Scenario.Manifest, t.Scenario.Lock)
 	p.field("correlation", "%s", t.CorrelationID)
@@ -77,8 +78,9 @@ func Render(w io.Writer, t *Transcript) error {
 		p.line("DEPENDENCY %q", dep.Alias)
 		p.field("request", "%s %s", dep.Request.Name, dep.Request.Range)
 		p.field("source policy", "%s → %s (%s)", dep.SourcePolicy.Pattern, policyTarget(dep.SourcePolicy), dep.SourcePolicy.Mode)
+		p.field("trust", "%s", valueOr(dep.SourcePolicy.Trust, "not reached"))
 		p.field("index display order", "%s", strings.Join(dep.IndexDisplayOrder, ", "))
-		p.field("queried sources", "%s", valueOr(strings.Join(dep.QueriedSources, ", "), "none"))
+		p.field("query order (actual)", "%s", valueOr(strings.Join(dep.QueriedSources, ", "), "none"))
 		p.field("excluded sources", "%s", valueOr(strings.Join(dep.SourcePolicy.Excluded, ", "), "none"))
 		for i, c := range dep.Candidates {
 			label := "candidates"

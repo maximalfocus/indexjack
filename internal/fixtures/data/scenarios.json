@@ -74,6 +74,26 @@
       "lock": "against-shadow",
       "candidate": "MODEL-CANDIDATE-17",
       "vulnerable": true
+    },
+    {
+      "id": "half-fix-private-first",
+      "summary": "Opt-in only. Half-fix: the trusted source is listed and queried first. The pool is still one pool, so the higher public version still wins.",
+      "resolver": "combined-index",
+      "source_policy": "combined-index-private-first",
+      "manifest": "permissive",
+      "lock": "against-shadow",
+      "candidate": "MODEL-CANDIDATE-17",
+      "vulnerable": true
+    },
+    {
+      "id": "half-fix-version-only",
+      "summary": "Opt-in only. Half-fix: the manifest pins an exact version. Both sources publish that exact version with different bytes, so pinning decides nothing about which bytes arrive.",
+      "resolver": "combined-index",
+      "source_policy": "combined-index",
+      "manifest": "exact",
+      "lock": "against-shadow",
+      "candidate": "MODEL-CANDIDATE-17",
+      "vulnerable": true
     }
   ]
 }

@@ -109,7 +109,9 @@ func TestHighestVersionAcrossThePoolWins(t *testing.T) {
 	for _, c := range res.Candidates {
 		versions = append(versions, c.Version)
 	}
-	if len(versions) != 3 || versions[0] != "9.9.9" {
+	// Both sources offer 1.4.2, the private source also offers 1.5.0, and the
+	// public one also offers the shadow. All four are merged into one pool.
+	if len(versions) != 4 || versions[0] != "9.9.9" {
 		t.Fatalf("candidates = %v", versions)
 	}
 	if res.Selected.Source != "community-public-shadow" || res.Selected.Version != "9.9.9" {

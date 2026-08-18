@@ -1,0 +1,16 @@
+{
+  "format": "indexjack-manifest/1",
+  "project": "glasswing-release-gate",
+  "dependencies": [
+    {
+      "alias": "release-policy",
+      "name": "@glasswing/release-policy",
+      "range": "1.4.2"
+    },
+    {
+      "alias": "report-format",
+      "name": "community-format",
+      "range": "2.1.0"
+    }
+  ]
+}

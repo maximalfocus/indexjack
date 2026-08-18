@@ -108,7 +108,48 @@ var vulnerableExpectations = []expectation{
 		selectedSource:  "community-public-shadow",
 		selectedVersion: "9.9.9",
 		integrity:       combinedindex.IntegrityUnverified,
+		queried:         "community-public-shadow,glasswing-private",
+		verdict:         pkgarchive.VerdictApprove,
+		mutation:        releasegate.MutationApproved,
+		ledgerChanged:   true,
+		ledgerEntries:   1,
+		auditEvents:     []string{audit.EventReleaseApproved},
+		reportResolved:  true,
+		reconciliation:  harness.ReconcileFail,
+		receipts: map[string]int{
+			"glasswing-private": 1, "community-public-shadow": 4,
+			"community-public": 0, "glasswing-private-missing": 0, "glasswing-private-tampered": 0,
+		},
+	},
+	{
+		// Half-fix: the trusted source is listed and queried first. One pool is
+		// still one pool.
+		scenario:        "half-fix-private-first",
+		clientResult:    releasegate.ResultBuildOK,
+		selectedSource:  "community-public-shadow",
+		selectedVersion: "9.9.9",
+		integrity:       combinedindex.IntegrityUnverified,
 		queried:         "glasswing-private,community-public-shadow",
+		verdict:         pkgarchive.VerdictApprove,
+		mutation:        releasegate.MutationApproved,
+		ledgerChanged:   true,
+		ledgerEntries:   1,
+		auditEvents:     []string{audit.EventReleaseApproved},
+		reportResolved:  true,
+		reconciliation:  harness.ReconcileFail,
+		receipts: map[string]int{
+			"glasswing-private": 1, "community-public-shadow": 4,
+			"community-public": 0, "glasswing-private-missing": 0, "glasswing-private-tampered": 0,
+		},
+	},
+	{
+		// Half-fix: an exact version is pinned, and both sources publish it.
+		scenario:        "half-fix-version-only",
+		clientResult:    releasegate.ResultBuildOK,
+		selectedSource:  "community-public-shadow",
+		selectedVersion: "1.4.2",
+		integrity:       combinedindex.IntegrityUnverified,
+		queried:         "community-public-shadow,glasswing-private",
 		verdict:         pkgarchive.VerdictApprove,
 		mutation:        releasegate.MutationApproved,
 		ledgerChanged:   true,
@@ -306,6 +347,16 @@ func RunAll(ctx context.Context, opts Options) ([]Result, error) {
 		if err := verifyPublicShadowImpact(ctx, rec, opts); err != nil {
 			return rec.results, err
 		}
+		if err := verifyHalfFixes(ctx, rec, opts); err != nil {
+			return rec.results, err
+		}
+		if err := verifyNegativeControls(ctx, rec, opts); err != nil {
+			return rec.results, err
+		}
+	}
+	verifyTaxonomy(rec)
+	if err := verifyNoExecutionPath(rec); err != nil {
+		return rec.results, err
 	}
 
 	// Two different failure causes must be indistinguishable to the build's
@@ -849,13 +900,13 @@ func verifyPublicShadowImpact(ctx context.Context, rec *recorder, opts Options) 
 	}
 	dep := transcript.Dependencies[0]
 
-	offered := map[string]string{}
+	offered := map[string][]string{}
 	for _, c := range dep.Candidates {
-		offered[c.Source] = c.Version
+		offered[c.Source] = append(offered[c.Source], c.Version)
 	}
 	rec.add(group, "both_trust_domains_offered_the_same_name",
-		offered["glasswing-private"] != "" && offered["community-public-shadow"] == "9.9.9",
-		"private %s, public %s", valueOr(offered["glasswing-private"], "none"), valueOr(offered["community-public-shadow"], "none"))
+		len(offered["glasswing-private"]) > 0 && contains(offered["community-public-shadow"], "9.9.9"),
+		"private %v, public %v", offered["glasswing-private"], offered["community-public-shadow"])
 	rec.expectString(group, "highest_version_wins", dep.Selected.Version, "9.9.9")
 	rec.expectString(group, "selected_origin_is_public", dep.Selected.Role, sourcepolicy.RolePublic)
 	rec.expectString(group, "selected_bytes_are_the_public_fixture", dep.Selected.SHA256, shadowDigest)
@@ -885,6 +936,313 @@ func verifyPublicShadowImpact(ctx context.Context, rec *recorder, opts Options) 
 	rec.add(group, "receipts_prove_the_public_fixture_served_it", askedForShadow,
 		"the public fixture reports serving @glasswing/release-policy@9.9.9")
 	return nil
+}
+
+func contains(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// verifyHalfFixes asserts that each mitigation which sounds sufficient is
+// honestly applied and still ends in the same place.
+func verifyHalfFixes(ctx context.Context, rec *recorder, opts Options) error {
+	const group = "half-fix"
+
+	transcripts := map[string]*harness.Transcript{}
+	for _, id := range []string{"vulnerable-public-shadow", "half-fix-private-first", "half-fix-version-only"} {
+		transcript, err := harness.Run(ctx, harness.Options{
+			ScenarioID: id,
+			StateDir:   filepath.Join(opts.StateDir, "half-fix", id),
+			Endpoints:  opts.Endpoints,
+		})
+		if err != nil {
+			return err
+		}
+		transcripts[id] = transcript
+	}
+
+	baseline := releasePolicyOf(transcripts["vulnerable-public-shadow"])
+	first := releasePolicyOf(transcripts["half-fix-private-first"])
+	pinned := releasePolicyOf(transcripts["half-fix-version-only"])
+	if baseline == nil || first == nil || pinned == nil {
+		rec.add(group, "scenarios_resolved", false, "a half-fix scenario resolved nothing")
+		return nil
+	}
+
+	// Private index listed first: the query order changes, the trust statement
+	// does not, and neither does the outcome.
+	rec.add(group, "private-first/queries_the_private_source_first",
+		len(first.QueriedSources) == 2 && first.QueriedSources[0] == "glasswing-private",
+		"query order %v", first.QueriedSources)
+	rec.expectString(group, "private-first/trust_is_still_nothing", first.SourcePolicy.Trust, harness.TrustPooled)
+	rec.expectString(group, "private-first/still_selects_the_public_package", first.Selected.Source, "community-public-shadow")
+	rec.expectString(group, "private-first/still_selects_the_higher_version", first.Selected.Version, "9.9.9")
+	rec.add(group, "private-first/order_changed_but_selection_did_not",
+		first.QueriedSources[0] != baseline.QueriedSources[0] &&
+			first.Selected.Source == baseline.Selected.Source &&
+			first.Selected.SHA256 == baseline.Selected.SHA256,
+		"baseline asked %v first and chose %s; private-first asked %v first and chose %s",
+		baseline.QueriedSources[0], baseline.Selected.Version, first.QueriedSources[0], first.Selected.Version)
+	rec.expectString(group, "private-first/verdict_still_flips",
+		transcripts["half-fix-private-first"].Release.PolicyVerdict, pkgarchive.VerdictApprove)
+
+	// Exact version pinned: both sources publish it, with different bytes.
+	sameVersion := map[string]string{}
+	for _, c := range pinned.Candidates {
+		if c.Version == "1.4.2" {
+			sameVersion[c.Source] = c.SHA256
+		}
+	}
+	rec.add(group, "version-only/both_sources_publish_the_pinned_version", len(sameVersion) == 2,
+		"%d source(s) offer 1.4.2", len(sameVersion))
+	rec.add(group, "version-only/the_two_artifacts_differ",
+		len(sameVersion) == 2 && sameVersion["glasswing-private"] != sameVersion["community-public-shadow"],
+		"private %s, public %s", digestPrefix(sameVersion["glasswing-private"]), digestPrefix(sameVersion["community-public-shadow"]))
+	rec.expectString(group, "version-only/pinned_version_was_honoured", pinned.Selected.Version, "1.4.2")
+	rec.expectString(group, "version-only/and_the_public_bytes_still_won", pinned.Selected.Source, "community-public-shadow")
+	rec.expectString(group, "version-only/verdict_still_flips",
+		transcripts["half-fix-version-only"].Release.PolicyVerdict, pkgarchive.VerdictApprove)
+	rec.add(group, "version-only/rule_is_stated_in_the_transcript",
+		strings.Contains(pinned.SelectionRule, "ties are broken"), "%s", pinned.SelectionRule)
+
+	// Lifecycle scripts: recorded as disabled on every run, and the verdict
+	// still changed through ordinary data consumption.
+	for id, transcript := range transcripts {
+		rec.expectString(group, "scripts-disabled/recorded/"+id, transcript.LifecycleScripts, harness.LifecycleScripts)
+	}
+	rec.expectString(group, "scripts-disabled/verdict_changed_without_any_hook",
+		transcripts["vulnerable-public-shadow"].Release.PolicyVerdict, pkgarchive.VerdictApprove)
+	return nil
+}
+
+// verifyNegativeControls automates what this flaw is *not*. Each control is a
+// claim the demonstration makes about its own boundaries, so each is checked.
+func verifyNegativeControls(ctx context.Context, rec *recorder, opts Options) error {
+	const group = "negative-control"
+
+	// 1. No outdated, deprecated or unmaintained component is a variable.
+	maintenanceWords := []string{"cve", "deprecated", "unmaintained", "end-of-life", "advisory", "patch_level", "vulnerable_version"}
+	found := ""
+	dirs, err := fixtures.PackageDirs()
+	if err != nil {
+		return err
+	}
+	for _, dir := range dirs {
+		raw, _, err := fixtures.BuildPackage(dir)
+		if err != nil {
+			return err
+		}
+		lowered := strings.ToLower(string(raw))
+		for _, word := range maintenanceWords {
+			if strings.Contains(lowered, word) {
+				found = dir + " mentions " + word
+			}
+		}
+	}
+	rec.add(group, "no_maintenance_state_is_a_variable", found == "",
+		"%s", valueOr(found, "no artifact carries a maintenance, advisory or version-age field"))
+
+	// 2. No registry compromise: the private source always serves exactly the
+	//    bytes this repository builds. The attacker never touches it.
+	intact, err := fixtures.RegistrySet("glasswing-private")
+	if err != nil {
+		return err
+	}
+	artifacts, err := fixtures.Artifacts()
+	if err != nil {
+		return err
+	}
+	byIdentity := map[string]string{}
+	for _, a := range artifacts {
+		byIdentity[a.Package] = a.SHA256
+	}
+	privateIntact := true
+	for _, pkg := range intact.Packages {
+		for _, a := range pkg.Versions {
+			digest := pkgarchive.Digest(a.Bytes)
+			if digest != byIdentity["release-policy-"+a.Version] {
+				privateIntact = false
+			}
+		}
+	}
+	rec.add(group, "the_private_source_is_never_the_attacker", privateIntact,
+		"every version the trusted source publishes is the artifact this repository builds")
+
+	// 3. No model or data poisoning: the inputs that are not software are
+	//    byte-identical across the two runs that disagree.
+	secure, err := harness.Run(ctx, harness.Options{
+		ScenarioID: "secure-against-public-shadow",
+		StateDir:   filepath.Join(opts.StateDir, "controls", "secure"),
+		Endpoints:  opts.Endpoints,
+	})
+	if err != nil {
+		return err
+	}
+	vulnerableRun, err := harness.Run(ctx, harness.Options{
+		ScenarioID: "vulnerable-public-shadow",
+		StateDir:   filepath.Join(opts.StateDir, "controls", "vulnerable"),
+		Endpoints:  opts.Endpoints,
+	})
+	if err != nil {
+		return err
+	}
+	rec.add(group, "the_candidate_and_its_classification_never_change",
+		secure.Release.Candidate == vulnerableRun.Release.Candidate &&
+			secure.Release.GateClassification == vulnerableRun.Release.GateClassification,
+		"%s is %s in both runs", secure.Release.Candidate, secure.Release.GateClassification)
+	secureSelected, vulnerableSelected := releasePolicyOf(secure), releasePolicyOf(vulnerableRun)
+	rec.add(group, "only_the_resolved_software_artifact_differs",
+		secureSelected != nil && vulnerableSelected != nil &&
+			secureSelected.Request.Name == vulnerableSelected.Request.Name &&
+			secureSelected.Selected.SHA256 != vulnerableSelected.Selected.SHA256,
+		"same dependency name, different bytes: %s vs %s",
+		digestPrefix(secureSelected.Selected.SHA256), digestPrefix(vulnerableSelected.Selected.SHA256))
+	rec.add(group, "and_the_verdicts_disagree",
+		secure.Release.PolicyVerdict != vulnerableRun.Release.PolicyVerdict,
+		"%s vs %s", secure.Release.PolicyVerdict, vulnerableRun.Release.PolicyVerdict)
+
+	// 4. Name secrecy is not a control.
+	buildLog, err := fixtures.BuildLog()
+	if err != nil {
+		return err
+	}
+	rec.add(group, "the_private_name_is_already_public", strings.Contains(buildLog, "@glasswing/release-policy"),
+		"a checked-in build log names the private package")
+	rec.add(group, "and_exclusive_binding_holds_anyway",
+		secureSelected != nil && secureSelected.Selected.Source == "glasswing-private" &&
+			secure.Release.PolicyVerdict == pkgarchive.VerdictReject,
+		"the secure run selected %s and still rejected the candidate", secureSelected.Selected.Source)
+
+	// 5. A legitimate public dependency still resolves, under both candidates.
+	publicOK := true
+	for _, id := range []string{"secure-unsafe-candidate", "secure-safe-candidate"} {
+		transcript, err := harness.Run(ctx, harness.Options{
+			ScenarioID: id,
+			StateDir:   filepath.Join(opts.StateDir, "controls", id),
+			Endpoints:  opts.Endpoints,
+		})
+		if err != nil {
+			return err
+		}
+		dep := dependencyOf(transcript, releasegate.AliasReportFormat)
+		if dep == nil || dep.Selected.Version != "2.1.0" || dep.Integrity != resolver.IntegrityVerified {
+			publicOK = false
+		}
+	}
+	rec.add(group, "a_bound_public_dependency_still_works", publicOK,
+		"community-format@2.1.0 resolves from its bound public source under both candidates")
+
+	// 6. A reviewed private upgrade still succeeds.
+	reviewed, err := harness.Run(ctx, harness.Options{
+		ScenarioID: "reviewed-upgrade",
+		StateDir:   filepath.Join(opts.StateDir, "controls", "reviewed-upgrade"),
+		Endpoints:  opts.Endpoints,
+	})
+	if err != nil {
+		return err
+	}
+	reviewedDep := releasePolicyOf(reviewed)
+	rec.add(group, "a_reviewed_private_upgrade_still_works",
+		reviewedDep != nil && reviewedDep.Selected.Version == "1.5.0" &&
+			reviewedDep.Integrity == resolver.IntegrityVerified && reviewed.Ledger.Changed,
+		"the lock was updated deliberately and 1.5.0 was accepted")
+	return nil
+}
+
+// verifyTaxonomy asserts the checked-in boundary of what this project claims.
+func verifyTaxonomy(rec *recorder) {
+	const group = "taxonomy"
+
+	taxonomy, err := fixtures.LoadTaxonomy()
+	if err != nil {
+		rec.add(group, "checked_in", false, "%v", err)
+		return
+	}
+	rec.expectString(group, "claims_exactly", strings.Join(fixtures.IDs(taxonomy.Claimed), ","),
+		"CWE-427,CWE-829,A08:2021,LLM03:2025")
+	rec.expectString(group, "refuses_exactly", strings.Join(fixtures.IDs(taxonomy.NotClaimed), ","),
+		"A06:2021,CWE-1104,LLM04")
+	rec.add(group, "every_refusal_states_a_reason", len(taxonomy.NotClaimed) > 0 && allHaveReasons(taxonomy.NotClaimed),
+		"%d refusals, each with its reason", len(taxonomy.NotClaimed))
+	rec.add(group, "no_real_package_manager_claim", taxonomy.NoRealPackageManagerClaim != "",
+		"%s", taxonomy.NoRealPackageManagerClaim)
+}
+
+func allHaveReasons(entries []fixtures.TaxonomyEntry) bool {
+	for _, e := range entries {
+		if strings.TrimSpace(e.Why) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// verifyNoExecutionPath asserts the claim that nothing here can run anything:
+// no artifact entry is executable, and the runtime image has no interpreter for
+// one to reach even if it were.
+func verifyNoExecutionPath(rec *recorder) error {
+	const group = "no-execution"
+
+	dirs, err := fixtures.PackageDirs()
+	if err != nil {
+		return err
+	}
+	entriesOK, executable := true, ""
+	for _, dir := range dirs {
+		raw, _, err := fixtures.BuildPackage(dir)
+		if err != nil {
+			return err
+		}
+		names, modes, err := pkgarchive.Entries(raw)
+		if err != nil {
+			return err
+		}
+		if len(names) != 2 || names[0] != "manifest.json" || names[1] != "policy.json" {
+			entriesOK = false
+		}
+		for i, mode := range modes {
+			if mode&0o111 != 0 {
+				executable = fmt.Sprintf("%s/%s has mode %#o", dir, names[i], mode)
+			}
+		}
+	}
+	rec.add(group, "artifacts_contain_only_two_data_entries", entriesOK,
+		"%d package(s), each exactly manifest.json and policy.json", len(dirs))
+	rec.add(group, "no_artifact_entry_is_executable", executable == "",
+		"%s", valueOr(executable, "every entry is read-only data"))
+
+	// Whether the runtime image contains anything capable of executing a
+	// command is asserted with the other containment claims, where it is in
+	// scope only for the demonstration's own containers.
+	return nil
+}
+
+func dependencyOf(t *harness.Transcript, alias string) *harness.Dependency {
+	for i := range t.Dependencies {
+		if t.Dependencies[i].Alias == alias {
+			return &t.Dependencies[i]
+		}
+	}
+	return nil
+}
+
+func releasePolicyOf(t *harness.Transcript) *harness.Dependency {
+	return dependencyOf(t, releasegate.AliasReleasePolicy)
+}
+
+func digestPrefix(digest string) string {
+	body := strings.TrimPrefix(digest, "sha256:")
+	if body == "" {
+		return "—"
+	}
+	if len(body) > 12 {
+		body = body[:12]
+	}
+	return body
 }
 
 func errText(err error) string {

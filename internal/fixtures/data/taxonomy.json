@@ -1,0 +1,48 @@
+{
+  "format": "indexjack-taxonomy/1",
+  "summary": "What this demonstration claims, and what it deliberately does not. The boundary is checked-in data so it cannot drift silently.",
+  "claimed": [
+    {
+      "id": "CWE-427",
+      "title": "Uncontrolled Search Path Element",
+      "role": "precise weakness",
+      "why": "A fixed search path contains an element an untrusted publisher can write to, and the entry names package-manager dependency confusion directly. Its ALLOWED-WITH-REVIEW mapping note is preserved rather than hidden."
+    },
+    {
+      "id": "CWE-829",
+      "title": "Inclusion of Functionality from Untrusted Control Sphere",
+      "role": "design-level companion",
+      "why": "The vulnerable build incorporates functionality from an untrusted control sphere. It complements the more precise CWE-427 rather than replacing it."
+    },
+    {
+      "id": "A08:2021",
+      "title": "Software and Data Integrity Failures",
+      "role": "OWASP Top 10 (2021) category",
+      "why": "OWASP describes applications consuming libraries or modules from untrusted repositories and tells package managers to consume trusted repositories."
+    },
+    {
+      "id": "LLM03:2025",
+      "title": "Supply Chain",
+      "role": "LLM-system context",
+      "why": "The affected consumer is an LLM release pipeline, and a third-party software dependency changes whether a model candidate is approved."
+    }
+  ],
+  "not_claimed": [
+    {
+      "id": "A06:2021",
+      "title": "Vulnerable and Outdated Components",
+      "why": "No component here is vulnerable, outdated, deprecated or unmaintained, and no maintenance state affects selection. OWASP's own A06 guidance sends modified or malicious package provenance to A08."
+    },
+    {
+      "id": "CWE-1104",
+      "title": "Use of Unmaintained Third Party Components",
+      "why": "Reliance on an unmaintained component is not the behaviour demonstrated here. Claiming it would fill a coverage square while teaching a different root cause."
+    },
+    {
+      "id": "LLM04",
+      "title": "Data and Model Poisoning",
+      "why": "Model candidates, their classifications and every evaluation input are byte-identical between runs. Only the resolved software artifact changes."
+    }
+  ],
+  "no_real_package_manager_claim": "The resolver here is a documented package-manager-agnostic model. No assertion is made that npm, pip, Maven, NuGet, Go modules, Cargo, RubyGems or any other named tool follows this project's precedence or tie rule."
+}

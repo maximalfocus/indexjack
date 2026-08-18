@@ -2,14 +2,14 @@
   "format": "indexjack-source-policy/1",
   "sources": [
     {
-      "id": "community-public-shadow",
-      "role": "public",
-      "url": "http://packages-shadow.public.example:8080"
-    },
-    {
       "id": "glasswing-private",
       "role": "private",
       "url": "http://packages.private.example:8080"
+    },
+    {
+      "id": "community-public-shadow",
+      "role": "public",
+      "url": "http://packages-shadow.public.example:8080"
     }
   ],
   "mappings": [
@@ -17,8 +17,8 @@
       "pattern": "@glasswing/*",
       "mode": "combined",
       "sources": [
-        "community-public-shadow",
-        "glasswing-private"
+        "glasswing-private",
+        "community-public-shadow"
       ]
     },
     {

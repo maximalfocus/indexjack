@@ -1,7 +1,11 @@
 # Docker Compose is the only supported way to run this demonstration.
 #
 #   docker compose run --rm --build verify   # build, start the registries, run the whole gate
-#   docker compose down -v                   # tear everything down
+#   docker compose down -v --remove-orphans  # tear everything down
+#
+# Use --remove-orphans: a plain `down` leaves services from a non-default
+# profile running, and the default gate will then correctly report that the
+# vulnerable registry is up when it should not be.
 #
 # The intentionally vulnerable half is not part of that. Reaching it takes two
 # separate deliberate acts — a non-default profile and an explicit

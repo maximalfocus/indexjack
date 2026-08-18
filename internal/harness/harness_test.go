@@ -257,7 +257,7 @@ func TestMatrixRunsEveryScenarioAndRenders(t *testing.T) {
 		t.Fatalf("Render: %v", err)
 	}
 	for _, want := range []string{
-		"source policy", "index display order", "queried sources", "excluded sources",
+		"source policy", "trust", "index display order", "query order (actual)", "excluded sources",
 		"candidates", "selection rule", "selected origin", "selected digest",
 		"integrity verdict", "REGISTRY-OBSERVED REQUESTS", "signature verified",
 		"policy verdict", "ledger before", "RECONCILIATION",
@@ -463,12 +463,12 @@ func TestPublicShadowWinsUnderTheCombinedIndexResolver(t *testing.T) {
 	if dep.SourcePolicy.Mode != sourcepolicy.ModeCombined {
 		t.Fatalf("source policy = %+v", dep.SourcePolicy)
 	}
-	// Both trust domains offered the same name, and both offers are recorded.
-	offers := map[string]string{}
+	// Both trust domains offered the same name, and every offer is recorded.
+	offers := map[string][]string{}
 	for _, c := range dep.Candidates {
-		offers[c.Source] = c.Version
+		offers[c.Source] = append(offers[c.Source], c.Version)
 	}
-	if offers["glasswing-private"] != "1.4.2" || offers["community-public-shadow"] != "9.9.9" {
+	if !containsVersion(offers["glasswing-private"], "1.4.2") || !containsVersion(offers["community-public-shadow"], "9.9.9") {
 		t.Fatalf("candidates = %+v", dep.Candidates)
 	}
 	if dep.Candidates[0].Version != "9.9.9" {
@@ -617,6 +617,15 @@ func TestAcknowledgedMatrixIncludesBothHalves(t *testing.T) {
 			t.Errorf("matrix is missing %q:\n%s", want, table.String())
 		}
 	}
+}
+
+func containsVersion(versions []string, want string) bool {
+	for _, v := range versions {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 func artifactDigest(t *testing.T, packageDir string) string {

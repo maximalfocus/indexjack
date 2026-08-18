@@ -185,6 +185,22 @@ Everything else is shared: the same hardened data-only artifact parser, the same
 same fixtures, the same transcript schema. The vulnerable resolver selects the wrong artifact; it
 does not run it, and no artifact in this project is executable by anything.
 
+### The half-fixes
+
+Three mitigations that sound sufficient are applied honestly, and all three still end in the same
+place. Each is a scenario you can run.
+
+| Half-fix | What the transcript shows | Why it fails |
+|---|---|---|
+| **Private index listed first** | `query order (actual)` is private then public, while `trust` still reads *none — every pooled source may answer* | Ordering is display. The merged pool is compared by version alone, so the higher public version still wins. |
+| **Exact version only** | both sources offering `1.4.2`, with different digests printed side by side | A version is not an identity. Pinning one says nothing about which bytes arrive, and the tie is settled by a rule the project chose, not by anything the build asked for. |
+| **Lifecycle scripts disabled** | `lifecycle_scripts: disabled` on every run, and no hook anywhere to disable | The public artifact was never going to run a hook. It is consumed on the ordinary application path, as data, and that was always enough to change the verdict. |
+
+The version-only case deserves one caveat, stated in the output itself: the tie goes to the public
+artifact under *this model's* documented rule. Under a different rule it might go the other way. That
+is the point rather than a limitation — a version string alone does not tell you which bytes you will
+get, and a build that pins only a version has not said which bytes it will accept.
+
 Two consequences are worth stating plainly, because they are the lesson rather than the mechanism:
 
 - **Listing the private source first would not help.** Pool order is a display detail; the merged set

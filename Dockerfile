@@ -18,6 +18,9 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/indexjack ./cmd/indexjack
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:1b7b9f0f0e0a1d2155f531db587cc48ec26aaf97ab64364225f5bf18a054e66a
 
 COPY --from=build /out/indexjack /usr/local/bin/indexjack
+# Marks the demonstration's own runtime image, so a test can tell whether the
+# container boundary it asserts is the one it is actually running in.
+ENV INDEXJACK_RUNTIME_IMAGE=1
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/indexjack"]
 CMD ["--help"]
