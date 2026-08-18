@@ -62,6 +62,9 @@ type Request struct {
 type SourcePolicy struct {
 	Pattern string `json:"pattern"`
 	Mode    string `json:"mode"`
+	// Trust states what the mapping actually constrains, which is a different
+	// question from the order sources are listed or queried in.
+	Trust string `json:"trust"`
 	// Bound is the single source of an exclusive mapping, and empty under a
 	// combined one — where nothing is bound, which is the point.
 	Bound string `json:"bound"`
@@ -179,6 +182,19 @@ const (
 	LockUnenforced = "none"
 )
 
+// LifecycleScripts is recorded on every run. There is no hook to enable: this
+// project has no lifecycle or install script mechanism at all, no artifact entry
+// may be executable, and nothing here spawns a process. The public artifact
+// still changes the release verdict, because ordinary data consumption was all
+// it ever needed.
+const LifecycleScripts = "disabled — no lifecycle or install hook mechanism exists anywhere in this project"
+
+// Trust statements recorded per dependency.
+const (
+	TrustBound  = "bound to one source; no other source may answer and none is a fallback"
+	TrustPooled = "none — every pooled source may answer; the order above is display only"
+)
+
 // Transcript is one run, in full.
 type Transcript struct {
 	Format   string   `json:"format"`
@@ -186,19 +202,20 @@ type Transcript struct {
 	// Resolver names the resolution model, LockEnforcement says whether
 	// artifact identity was checked at all, and Warning is set on everything
 	// the intentionally vulnerable half produces.
-	Resolver        string            `json:"resolver"`
-	LockEnforcement string            `json:"lock_enforcement"`
-	Warning         string            `json:"warning,omitempty"`
-	Project         string            `json:"project"`
-	CorrelationID   string            `json:"correlation_id"`
-	Dependencies    []Dependency      `json:"dependencies"`
-	Failure         *Failure          `json:"failure"`
-	Release         Release           `json:"release"`
-	Ledger          Ledger            `json:"ledger"`
-	Audit           []AuditRecord     `json:"audit"`
-	Receipts        []RegistryReceipt `json:"registry_receipts"`
-	ClientResponse  ClientResponse    `json:"client_response"`
-	Reconciliation  Reconciliation    `json:"reconciliation"`
+	Resolver         string            `json:"resolver"`
+	LockEnforcement  string            `json:"lock_enforcement"`
+	LifecycleScripts string            `json:"lifecycle_scripts"`
+	Warning          string            `json:"warning,omitempty"`
+	Project          string            `json:"project"`
+	CorrelationID    string            `json:"correlation_id"`
+	Dependencies     []Dependency      `json:"dependencies"`
+	Failure          *Failure          `json:"failure"`
+	Release          Release           `json:"release"`
+	Ledger           Ledger            `json:"ledger"`
+	Audit            []AuditRecord     `json:"audit"`
+	Receipts         []RegistryReceipt `json:"registry_receipts"`
+	ClientResponse   ClientResponse    `json:"client_response"`
+	Reconciliation   Reconciliation    `json:"reconciliation"`
 }
 
 // Bytes renders the transcript in its canonical machine-readable form.
@@ -350,12 +367,13 @@ func build(scenario fixtures.Scenario, outcome *releasegate.Outcome, receipts []
 			Candidate:    scenario.Candidate,
 			Vulnerable:   scenario.Vulnerable,
 		},
-		Resolver:        outcome.Resolver,
-		LockEnforcement: lockEnforcement(outcome),
-		Warning:         warning(scenario),
-		Project:         outcome.Project,
-		CorrelationID:   audit.CorrelationID(scenario.ID),
-		Dependencies:    []Dependency{},
+		Resolver:         outcome.Resolver,
+		LockEnforcement:  lockEnforcement(outcome),
+		LifecycleScripts: LifecycleScripts,
+		Warning:          warning(scenario),
+		Project:          outcome.Project,
+		CorrelationID:    audit.CorrelationID(scenario.ID),
+		Dependencies:     []Dependency{},
 		Release: Release{
 			Candidate:          scenario.Candidate,
 			GateClassification: outcome.Classification,
@@ -412,6 +430,7 @@ func dependencyRecord(res *resolver.Resolution, failure *resolver.Failure) Depen
 		SourcePolicy: SourcePolicy{
 			Pattern:  res.Policy.Pattern,
 			Mode:     res.Policy.Mode,
+			Trust:    trustOf(res.Policy),
 			Bound:    res.Policy.Bound.ID,
 			Pool:     poolOf(res.Policy),
 			Excluded: res.Excluded,
@@ -460,6 +479,16 @@ func dependencyRecord(res *resolver.Resolution, failure *resolver.Failure) Depen
 		})
 	}
 	return dep
+}
+
+func trustOf(decision sourcepolicy.Decision) string {
+	if decision.Mode == sourcepolicy.ModeExclusive && decision.Bound.ID != "" {
+		return TrustBound
+	}
+	if decision.Mode == "" {
+		return ""
+	}
+	return TrustPooled
 }
 
 func poolOf(decision sourcepolicy.Decision) []string {

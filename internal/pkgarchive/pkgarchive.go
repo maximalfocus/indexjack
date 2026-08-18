@@ -319,3 +319,21 @@ func validatePolicy(p Policy) error {
 	}
 	return nil
 }
+
+// Entries reports the names and modes of an archive's entries without
+// interpreting any of their content. It exists so verification can assert that
+// an artifact carries exactly two read-only data files and nothing executable.
+func Entries(data []byte) (names []string, modes []int64, err error) {
+	tr := tar.NewReader(bytes.NewReader(data))
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return names, modes, nil
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: %v", ErrMalformedContent, err)
+		}
+		names = append(names, hdr.Name)
+		modes = append(modes, hdr.Mode)
+	}
+}

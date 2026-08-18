@@ -37,7 +37,69 @@ const (
 	registryFormat       = "indexjack-registry-fixtures/1"
 	scenarioFormat       = "indexjack-scenarios/1"
 	networkFormat        = "indexjack-network/1"
+	taxonomyFormat       = "indexjack-taxonomy/1"
 )
+
+// TaxonomyEntry is one classification this demonstration either claims or
+// deliberately refuses, with the reason attached.
+type TaxonomyEntry struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Role  string `json:"role,omitempty"`
+	Why   string `json:"why"`
+}
+
+// Taxonomy is the checked-in boundary of what this project says it is about.
+// Keeping it as data rather than prose means the boundary cannot drift without
+// a test noticing.
+type Taxonomy struct {
+	Format                    string          `json:"format"`
+	Summary                   string          `json:"summary"`
+	Claimed                   []TaxonomyEntry `json:"claimed"`
+	NotClaimed                []TaxonomyEntry `json:"not_claimed"`
+	NoRealPackageManagerClaim string          `json:"no_real_package_manager_claim"`
+}
+
+// IDs returns the identifiers of a taxonomy list, in checked-in order.
+func IDs(entries []TaxonomyEntry) []string {
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.ID)
+	}
+	return out
+}
+
+// LoadTaxonomy returns the checked-in taxonomy boundary.
+func LoadTaxonomy() (Taxonomy, error) {
+	var doc Taxonomy
+	if err := read("taxonomy.json", &doc); err != nil {
+		return Taxonomy{}, err
+	}
+	if doc.Format != taxonomyFormat {
+		return Taxonomy{}, fmt.Errorf("%w: taxonomy format %q", ErrUnknownFixture, doc.Format)
+	}
+	if len(doc.Claimed) == 0 || len(doc.NotClaimed) == 0 || doc.NoRealPackageManagerClaim == "" {
+		return Taxonomy{}, fmt.Errorf("%w: taxonomy is incomplete", ErrUnknownFixture)
+	}
+	for _, entry := range append(append([]TaxonomyEntry{}, doc.Claimed...), doc.NotClaimed...) {
+		if entry.ID == "" || entry.Title == "" || entry.Why == "" {
+			return Taxonomy{}, fmt.Errorf("%w: taxonomy entry %q is incomplete", ErrUnknownFixture, entry.ID)
+		}
+	}
+	return doc, nil
+}
+
+// BuildLog returns the checked-in vulnerable build log.
+//
+// It exists to make one point: the private package name is not a secret. Nothing
+// reads it, and deleting it changes no resolver outcome.
+func BuildLog() (string, error) {
+	raw, err := data.ReadFile("data/logs/vulnerable-build.log")
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrUnknownFixture, err)
+	}
+	return string(raw), nil
+}
 
 type networkDoc struct {
 	Format            string `json:"format"`

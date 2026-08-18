@@ -28,6 +28,16 @@ type Check struct {
 // not the environment being asserted.
 func Supported() bool { return runtime.GOOS == "linux" }
 
+// RuntimeImageEnv is set by the demonstration's own runtime image. The
+// toolchain container that compiles and runs the tests is a different image
+// with different properties — it has a compiler and a shell, and must — so a
+// test needs to know which one it is in before asserting this boundary.
+const RuntimeImageEnv = "INDEXJACK_RUNTIME_IMAGE"
+
+// InRuntimeImage reports whether this process is running in the
+// demonstration's own runtime image.
+func InRuntimeImage() bool { return os.Getenv(RuntimeImageEnv) != "" }
+
 // externalProbe is a routable public address the demonstration must not be able
 // to reach. Nothing is sent to it: the connection attempt is expected to fail
 // before any packet leaves the container network, and the check fails if it
@@ -48,6 +58,7 @@ func Run(stateDir string) []Check {
 		noNewPrivileges(),
 		capabilitiesDropped(),
 		readOnlyRootFilesystem(),
+		noInterpreterInImage(),
 		stateDirWritable(stateDir),
 		noDefaultRoute(),
 		externalConnectionRefused(),
@@ -121,6 +132,27 @@ func readOnlyRootFilesystem() Check {
 		return Check{Name: "read_only_root_filesystem", Detail: "root filesystem accepted a write", Pass: false}
 	}
 	return Check{Name: "read_only_root_filesystem", Detail: err.Error(), Pass: true}
+}
+
+// noInterpreterInImage looks for something to execute. The runtime image is
+// built on a shell-less base, so even if an artifact could somehow ask for a
+// command to be run — and none can — there is nothing here to run it with.
+func noInterpreterInImage() Check {
+	interpreters := []string{"/bin/sh", "/bin/bash", "/bin/dash", "/usr/bin/env", "/usr/bin/python3", "/bin/busybox"}
+	present := make([]string, 0, len(interpreters))
+	for _, path := range interpreters {
+		if _, err := os.Stat(path); err == nil {
+			present = append(present, path)
+		}
+	}
+	if len(present) > 0 {
+		return Check{Name: "no_interpreter_in_image", Detail: "found " + strings.Join(present, ", ")}
+	}
+	return Check{
+		Name:   "no_interpreter_in_image",
+		Detail: "none of " + strings.Join(interpreters, ", ") + " exists",
+		Pass:   true,
+	}
 }
 
 func stateDirWritable(stateDir string) Check {

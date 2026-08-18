@@ -43,7 +43,7 @@ Docker, and nothing else. No Go toolchain, no package manager, and no network ac
 
 ```sh
 docker compose run --rm --build verify   # build, start the registries, run the whole gate
-docker compose down -v                   # tear everything down
+docker compose down -v --remove-orphans  # tear everything down, including the opt-in services
 ```
 
 The gate takes seconds and asserts, in one pass:
@@ -63,6 +63,10 @@ The gate takes seconds and asserts, in one pass:
   or package content;
 - **the opt-in controls** — each control alone refuses, both together admit, and in a default run the
   vulnerable scenarios are not merely refused but absent, with their registry not even running;
+- **the taxonomy boundary** — the claimed and deliberately refused classifications are exactly the
+  checked-in sets, each refusal with its reason;
+- **no execution path** — every artifact is exactly two read-only data entries, and the runtime image
+  contains no shell or interpreter to run anything with;
 - **formatting, vetting and the full test suite**, in a pinned toolchain image through the same
   Compose boundary that CI uses.
 
@@ -106,6 +110,8 @@ docker compose run --rm cli release --scenario secure-safe-candidate   # the dir
 | `reviewed-upgrade` | The same upgrade succeeds once the checked-in lock carries the new version, size, and digest. |
 | `vulnerable-public-shadow` | *Opt-in only.* One name resolved across two trust domains: a public package with the same name and a higher version wins, and approves the known-unsafe candidate. |
 | `secure-against-public-shadow` | *Opt-in only.* The identical shadow exists and is running, and exclusive binding still selects the private artifact and still rejects the candidate. |
+| `half-fix-private-first` | *Opt-in only.* Half-fix: the trusted source is listed and queried first. One pool is still one pool. |
+| `half-fix-version-only` | *Opt-in only.* Half-fix: an exact version is pinned, and both sources publish it with different bytes. |
 
 Scenario ids are the only input the demonstration accepts. There is no way to pass a package name,
 version, registry, URL, artifact, model, or policy from outside. The harness reports on a run, so it
@@ -127,6 +133,10 @@ ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable run --rm verify-v
 Either one alone fails, and says which acknowledgement is missing. The profile without the
 acknowledgement will not even start the registry that serves the shadow.
 
+Tear the opt-in services down with `docker compose down -v --remove-orphans` when you are finished. A
+plain `down` leaves them running, and the default gate will then correctly report that the vulnerable
+registry is up when it should not be.
+
 That run is the same gate as `verify` plus the vulnerable-path assertions, and afterwards the matrix
 shows both halves side by side:
 
@@ -143,6 +153,22 @@ secure-against-public-shadow  @glasswing/*→glasswing-private                  
 Same build, same candidate, same public registry — running, reachable, and carrying the shadow. The
 only differences are that one run pools two sources for a single name instead of binding it to one,
 and does not check what bytes it got. That is the entire flaw.
+
+### Three mitigations that are not one
+
+| Half-fix | Why it fails |
+|---|---|
+| **Private index listed first** | The query order really does change. The trust statement does not, and neither does the selection: one pool is still one pool. |
+| **Exact version only** | Both sources publish the pinned version, with different bytes. Pinning a version says nothing about which bytes arrive. |
+| **Lifecycle scripts disabled** | There is no hook here to disable. The public artifact is consumed as ordinary data, and that was always enough to flip the verdict. |
+
+### And six things this is *not*
+
+No outdated or unmaintained component is a variable; the private registry is never compromised or
+intercepted; the model candidates and their classifications are byte-identical between runs, so the
+only differing input is the resolved software artifact; the private package name is already in a
+checked-in build log and exclusive binding holds anyway; a legitimate public dependency still
+resolves; and a reviewed private upgrade still succeeds. Each is an assertion group in the gate.
 
 Neither control is a security boundary and neither pretends to be one; anything with a shell can set
 an environment variable. They are an acknowledgement, so that nobody arrives at the vulnerable half by
@@ -182,9 +208,12 @@ running the documented command or copying a snippet.
 | `internal/verify` | the gate every assertion above comes from |
 | `internal/fixtures` | every checked-in fixture, and the deterministic build of each artifact |
 
-[`docs/RESOLVER.md`](docs/RESOLVER.md) documents the resolver model in full: the ordering rule, the
-tie rule, the lock fields, and the stable error classes. [`docs/TRANSCRIPT.md`](docs/TRANSCRIPT.md)
-documents the transcript, the registry receipt boundary, and how a run reconciles.
+[`docs/RESOLVER.md`](docs/RESOLVER.md) documents both resolver models in full: the ordering rule, the
+tie rule, the lock fields, the stable error classes, and the three half-fixes.
+[`docs/TRANSCRIPT.md`](docs/TRANSCRIPT.md) documents the transcript, the registry receipt boundary,
+and how a run reconciles. [`docs/TAXONOMY.md`](docs/TAXONOMY.md) states exactly what this project
+claims and what it deliberately does not — including why the pairing a reader might expect,
+A06:2021 with CWE-1104, is not claimed here.
 
 The resolver is a deliberately small, documented model of how dependency resolution can work. It is
 **not** a reimplementation of npm, pip, Maven, NuGet, Go modules, Cargo, or any other tool, and this

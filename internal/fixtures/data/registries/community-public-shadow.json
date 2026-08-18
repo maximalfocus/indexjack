@@ -11,6 +11,10 @@
       "name": "@glasswing/release-policy",
       "versions": [
         {
+          "version": "1.4.2",
+          "package": "release-policy-1.4.2-public-shadow"
+        },
+        {
           "version": "9.9.9",
           "package": "release-policy-9.9.9-public-shadow"
         }

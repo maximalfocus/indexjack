@@ -1,0 +1,14 @@
+# Checked-in build log from the vulnerable run.
+#
+# It is here to make one point: the private package name is not a secret, and was
+# never going to be one. Names appear in manifests, lock files, build logs, error
+# messages, caches and documentation. Deleting this file changes no resolver
+# outcome, because secrecy was never the control — exclusive source binding is,
+# and it holds with the name fully public.
+#
+# Nothing reads this file. It is inert text.
+resolving @glasswing/release-policy >=1.4.2
+  queried community-public-shadow -> 1.4.2, 9.9.9
+  queried glasswing-private       -> 1.4.2, 1.5.0
+  selected community-public-shadow @glasswing/release-policy 9.9.9
+release gate: MODEL-CANDIDATE-17 APPROVE
