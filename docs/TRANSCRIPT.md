@@ -104,7 +104,7 @@ run does reach it, the transcript says so on its own.
 ## Reading it
 
 ```sh
-docker compose run --rm cli harness --matrix                                      # one row per scenario
+docker compose run --rm cli compare                                               # one row per scenario
 docker compose run --rm cli harness --scenario secure-tampered-artifact           # the full trace
 docker compose run --rm cli harness --scenario secure-tampered-artifact --format json
 ```

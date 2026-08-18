@@ -1170,6 +1170,17 @@ func verifyTaxonomy(rec *recorder) {
 		"%d refusals, each with its reason", len(taxonomy.NotClaimed))
 	rec.add(group, "no_real_package_manager_claim", taxonomy.NoRealPackageManagerClaim != "",
 		"%s", taxonomy.NoRealPackageManagerClaim)
+
+	// Every claim, and every refusal, rests on a page someone can go and read.
+	missing := ""
+	for _, entry := range append(append([]fixtures.TaxonomyEntry{}, taxonomy.Claimed...), taxonomy.NotClaimed...) {
+		if !strings.HasPrefix(entry.Reference, "https://") {
+			missing = entry.ID
+		}
+	}
+	rec.add(group, "every_entry_links_its_authoritative_page", missing == "",
+		"%s", valueOr(missing, "each entry carries a MITRE or OWASP reference"))
+	rec.add(group, "readback_is_recorded", taxonomy.Checked != "", "%s", taxonomy.Checked)
 }
 
 func allHaveReasons(entries []fixtures.TaxonomyEntry) bool {

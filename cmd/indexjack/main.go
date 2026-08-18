@@ -40,7 +40,8 @@ const usage = `indexjack — local dependency-confusion demonstration
 usage:
   indexjack registry --fixtures ID [--listen ADDR]   serve one immutable registry fixture set
   indexjack release --scenario ID [--state-dir DIR]  run one enumerated scenario
-  indexjack harness --scenario ID | --matrix         run scenarios and record the full provenance trace
+  indexjack compare [--format human|json]            run every reachable scenario and print one row each
+  indexjack harness --scenario ID [--format ...]     run one scenario and record its full provenance trace
   indexjack verify [--state-dir DIR]                 run the full verification gate
   indexjack scenarios                                list the enumerated scenarios
   indexjack fixtures                                 list the built artifacts and their digests
@@ -70,6 +71,8 @@ func run(args []string) error {
 		return runRegistry(ctx, args[1:])
 	case "release":
 		return runRelease(ctx, args[1:])
+	case "compare":
+		return runCompare(ctx, args[1:])
 	case "harness":
 		return runHarness(ctx, args[1:])
 	case "verify":
@@ -191,36 +194,55 @@ func runRelease(ctx context.Context, args []string) error {
 	return nil
 }
 
+// runCompare is the command most people should run first: every scenario the
+// current workflow can reach, one row each, from fresh state.
+func runCompare(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("compare", flag.ContinueOnError)
+	format := fs.String("format", "human", "output form: human or json")
+	stateDir := fs.String("state-dir", defaultStateDir, "disposable directory for run state and transcripts")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *format != "human" && *format != "json" {
+		return errors.New("--format must be human or json")
+	}
+
+	transcripts, err := harness.Matrix(ctx, harness.Options{StateDir: *stateDir})
+	if err != nil {
+		return err
+	}
+	if *format == "json" {
+		body, err := canonicaljson.Marshal(transcripts)
+		if err != nil {
+			return err
+		}
+		fmt.Print(string(body))
+		return nil
+	}
+	if err := harness.RenderMatrix(os.Stdout, transcripts); err != nil {
+		return err
+	}
+	if !vulnerable.Acknowledged() {
+		fmt.Printf("\nThe intentionally vulnerable scenarios are not listed above and were not run.\n"+
+			"Reaching them takes both the %q container profile and %s=%s.\n",
+			vulnerable.Profile, vulnerable.AcknowledgementEnv, vulnerable.Acknowledgement)
+	}
+	return nil
+}
+
 func runHarness(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("harness", flag.ContinueOnError)
 	scenarioID := fs.String("scenario", "", "enumerated scenario to run")
-	matrix := fs.Bool("matrix", false, "run every enumerated scenario and print one row each")
 	format := fs.String("format", "human", "transcript form: human or json")
 	stateDir := fs.String("state-dir", defaultStateDir, "disposable directory for run state and transcripts")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *format != "human" && *format != "json" {
-		return fmt.Errorf("--format must be human or json")
+		return errors.New("--format must be human or json")
 	}
-	if *matrix == (*scenarioID != "") {
-		return errors.New("pass exactly one of --scenario or --matrix")
-	}
-
-	if *matrix {
-		transcripts, err := harness.Matrix(ctx, harness.Options{StateDir: *stateDir})
-		if err != nil {
-			return err
-		}
-		if *format == "json" {
-			body, err := canonicaljson.Marshal(transcripts)
-			if err != nil {
-				return err
-			}
-			fmt.Print(string(body))
-			return nil
-		}
-		return harness.RenderMatrix(os.Stdout, transcripts)
+	if *scenarioID == "" {
+		return errors.New("--scenario is required; use `indexjack compare` to run every scenario at once")
 	}
 
 	ids, err := fixtures.ScenarioIDs()

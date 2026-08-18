@@ -5,24 +5,30 @@
     {
       "id": "CWE-427",
       "title": "Uncontrolled Search Path Element",
+      "reference": "https://cwe.mitre.org/data/definitions/427.html",
       "role": "precise weakness",
-      "why": "A fixed search path contains an element an untrusted publisher can write to, and the entry names package-manager dependency confusion directly. Its ALLOWED-WITH-REVIEW mapping note is preserved rather than hidden."
+      "why": "A fixed search path contains an element an untrusted publisher can write to, and the entry names package-manager dependency confusion directly. Its ALLOWED-WITH-REVIEW mapping note is preserved rather than hidden.",
+      "quotes": "Dependency confusion: As of February 2021, this term is used to describe CWE-427 in the context of managing installation of software package dependencies."
     },
     {
       "id": "CWE-829",
       "title": "Inclusion of Functionality from Untrusted Control Sphere",
+      "reference": "https://cwe.mitre.org/data/definitions/829.html",
       "role": "design-level companion",
       "why": "The vulnerable build incorporates functionality from an untrusted control sphere. It complements the more precise CWE-427 rather than replacing it."
     },
     {
       "id": "A08:2021",
       "title": "Software and Data Integrity Failures",
+      "reference": "https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/",
       "role": "OWASP Top 10 (2021) category",
-      "why": "OWASP describes applications consuming libraries or modules from untrusted repositories and tells package managers to consume trusted repositories."
+      "why": "OWASP describes applications consuming libraries or modules from untrusted repositories and tells package managers to consume trusted repositories.",
+      "quotes": "An example of this is where an application relies upon plugins, libraries, or modules from untrusted sources, repositories, and content delivery networks (CDNs)."
     },
     {
       "id": "LLM03:2025",
       "title": "Supply Chain",
+      "reference": "https://genai.owasp.org/llmrisk/llm032025-supply-chain/",
       "role": "LLM-system context",
       "why": "The affected consumer is an LLM release pipeline, and a third-party software dependency changes whether a model candidate is approved."
     }
@@ -31,18 +37,23 @@
     {
       "id": "A06:2021",
       "title": "Vulnerable and Outdated Components",
-      "why": "No component here is vulnerable, outdated, deprecated or unmaintained, and no maintenance state affects selection. OWASP's own A06 guidance sends modified or malicious package provenance to A08."
+      "reference": "https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/",
+      "why": "No component here is vulnerable, outdated, deprecated or unmaintained, and no maintenance state affects selection. OWASP's own A06 guidance sends modified or malicious package provenance to A08.",
+      "quotes": "Only obtain components from official sources over secure links. Prefer signed packages to reduce the chance of including a modified, malicious component (see A08:2021-Software and Data Integrity Failures)."
     },
     {
       "id": "CWE-1104",
       "title": "Use of Unmaintained Third Party Components",
+      "reference": "https://cwe.mitre.org/data/definitions/1104.html",
       "why": "Reliance on an unmaintained component is not the behaviour demonstrated here. Claiming it would fill a coverage square while teaching a different root cause."
     },
     {
       "id": "LLM04",
       "title": "Data and Model Poisoning",
+      "reference": "https://genai.owasp.org/llmrisk/llm042025-data-and-model-poisoning/",
       "why": "Model candidates, their classifications and every evaluation input are byte-identical between runs. Only the resolved software artifact changes."
     }
   ],
-  "no_real_package_manager_claim": "The resolver here is a documented package-manager-agnostic model. No assertion is made that npm, pip, Maven, NuGet, Go modules, Cargo, RubyGems or any other named tool follows this project's precedence or tie rule."
+  "no_real_package_manager_claim": "The resolver here is a documented package-manager-agnostic model. No assertion is made that npm, pip, Maven, NuGet, Go modules, Cargo, RubyGems or any other named tool follows this project's precedence or tie rule.",
+  "checked": "Authoritative pages read back on 2026-08-18."
 }

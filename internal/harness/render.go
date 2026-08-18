@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"indexjack/internal/fixtures"
 	"indexjack/internal/vulnerable"
@@ -224,14 +225,16 @@ func RenderMatrix(w io.Writer, transcripts []*Transcript) error {
 		})
 	}
 
+	// Widths are counted in runes, not bytes: the table contains arrows and em
+	// dashes, and padding those by byte length pulls whole columns out of line.
 	widths := make([]int, len(columns))
 	for i, c := range columns {
-		widths[i] = len(c)
+		widths[i] = utf8.RuneCountInString(c)
 	}
 	for _, row := range rows {
 		for i, cell := range row {
-			if len(cell) > widths[i] {
-				widths[i] = len(cell)
+			if n := utf8.RuneCountInString(cell); n > widths[i] {
+				widths[i] = n
 			}
 		}
 	}
@@ -252,7 +255,7 @@ func RenderMatrix(w io.Writer, transcripts []*Transcript) error {
 func renderRow(cells []string, widths []int) string {
 	parts := make([]string, len(cells))
 	for i, cell := range cells {
-		parts[i] = fmt.Sprintf("%-*s", widths[i], cell)
+		parts[i] = cell + strings.Repeat(" ", widths[i]-utf8.RuneCountInString(cell))
 	}
 	return strings.TrimRight(strings.Join(parts, "  "), " ")
 }
@@ -299,13 +302,40 @@ func integrityOf(t *Transcript) string {
 	return ""
 }
 
+// queriedColumn lists what each registry reports being asked, in the order the
+// run actually asked them. Ordering matters here: one of the half-fixes is
+// precisely the claim that asking the trusted source first changes something.
 func queriedColumn(t *Transcript) string {
-	parts := make([]string, 0, len(t.Receipts))
+	counts := make(map[string]int, len(t.Receipts))
 	for _, r := range t.Receipts {
-		if r.RequestCount == 0 {
+		counts[r.Source] = r.RequestCount
+	}
+
+	ordered := make([]string, 0, len(t.Receipts))
+	seen := make(map[string]bool, len(t.Receipts))
+	for _, dep := range t.Dependencies {
+		for _, source := range dep.QueriedSources {
+			if !seen[source] {
+				seen[source] = true
+				ordered = append(ordered, source)
+			}
+		}
+	}
+	// Any registry that reports requests the run did not attribute to a
+	// dependency is still listed, after the ones it did.
+	for _, r := range t.Receipts {
+		if r.RequestCount > 0 && !seen[r.Source] {
+			seen[r.Source] = true
+			ordered = append(ordered, r.Source)
+		}
+	}
+
+	parts := make([]string, 0, len(ordered))
+	for _, source := range ordered {
+		if counts[source] == 0 {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s(%d)", r.Source, r.RequestCount))
+		parts = append(parts, fmt.Sprintf("%s(%d)", source, counts[source]))
 	}
 	if len(parts) == 0 {
 		return "none"
