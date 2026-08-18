@@ -11,7 +11,12 @@ import (
 
 	"indexjack/internal/fixtures"
 	"indexjack/internal/registry"
+	"indexjack/internal/vulnerable"
 )
+
+// unreachable is an address nothing listens on: a loopback port reserved by
+// convention and never bound by this project.
+const unreachable = "http://127.0.0.1:1"
 
 // Stack is every checked-in registry fixture set running in this process on
 // loopback.
@@ -56,6 +61,15 @@ func StartStack() (*Stack, error) {
 		if err != nil {
 			stack.Close()
 			return nil, err
+		}
+		// A registry belonging to the intentionally vulnerable half does not
+		// start unless both opt-in controls are satisfied, exactly as in the
+		// container workflow. Its address is pointed at nothing so that "not
+		// running" is the same observable fact here as it is there, whatever
+		// else happens to be listening on the network around us.
+		if set.Vulnerable && !vulnerable.Acknowledged() {
+			stack.Endpoints[checkedInURL] = unreachable
+			continue
 		}
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {

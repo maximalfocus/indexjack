@@ -287,16 +287,16 @@ func TestAuditRecordsArePersistedWithADeterministicCorrelationID(t *testing.T) {
 
 func TestEveryScenarioRunsFromFreshStateDeterministically(t *testing.T) {
 	s := startStack(t)
-	scenarios, err := fixtures.Scenarios()
+	ids, err := fixtures.DefaultScenarioIDs()
 	if err != nil {
-		t.Fatalf("Scenarios: %v", err)
+		t.Fatalf("DefaultScenarioIDs: %v", err)
 	}
-	for _, scenario := range scenarios {
-		first := execute(t, s, scenario.ID, t.TempDir())
-		second := execute(t, s, scenario.ID, t.TempDir())
+	for _, id := range ids {
+		first := execute(t, s, id, t.TempDir())
+		second := execute(t, s, id, t.TempDir())
 		if first.ClientResult != second.ClientResult || first.Verdict != second.Verdict ||
 			first.Mutation != second.Mutation || first.LedgerAfter != second.LedgerAfter {
-			t.Fatalf("%s is not deterministic:\n%+v\n%+v", scenario.ID, first, second)
+			t.Fatalf("%s is not deterministic:\n%+v\n%+v", id, first, second)
 		}
 	}
 }

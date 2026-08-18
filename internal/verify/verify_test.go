@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"indexjack/internal/fixtures"
+	"indexjack/internal/vulnerable"
 )
 
 // TestGateIsGreenInProcess runs the entire verification gate against the
@@ -44,8 +45,8 @@ func TestEveryEnumeratedScenarioHasAnExpectation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScenarioIDs: %v", err)
 	}
-	covered := make(map[string]bool, len(expectations))
-	for _, e := range expectations {
+	covered := make(map[string]bool, len(expectations)+len(vulnerableExpectations))
+	for _, e := range append(append([]expectation{}, expectations...), vulnerableExpectations...) {
 		covered[e.scenario] = true
 	}
 	for _, id := range ids {
@@ -53,9 +54,29 @@ func TestEveryEnumeratedScenarioHasAnExpectation(t *testing.T) {
 			t.Errorf("scenario %q has no checked-in expectation", id)
 		}
 	}
-	for _, e := range expectations {
+	for _, e := range append(append([]expectation{}, expectations...), vulnerableExpectations...) {
 		if _, err := fixtures.LoadScenario(e.scenario); err != nil {
 			t.Errorf("expectation names unknown scenario %q", e.scenario)
+		}
+	}
+	// The two lists must not overlap: a scenario is either reachable by default
+	// or part of the vulnerable half, never both.
+	for _, e := range vulnerableExpectations {
+		scenario, err := fixtures.LoadScenario(e.scenario)
+		if err != nil {
+			t.Fatalf("LoadScenario(%q): %v", e.scenario, err)
+		}
+		if !scenario.Vulnerable {
+			t.Errorf("scenario %q is asserted as vulnerable but is not marked so", e.scenario)
+		}
+	}
+	for _, e := range expectations {
+		scenario, err := fixtures.LoadScenario(e.scenario)
+		if err != nil {
+			t.Fatalf("LoadScenario(%q): %v", e.scenario, err)
+		}
+		if scenario.Vulnerable {
+			t.Errorf("scenario %q is marked vulnerable but is asserted by default", e.scenario)
 		}
 	}
 }
@@ -137,6 +158,43 @@ func TestScenariosQueryOnlyTheBoundRegistry(t *testing.T) {
 			if got := len(stack.Requests("community-public")); got != 0 {
 				t.Errorf("%s: %d public-registry requests after a closed failure", want.scenario, got)
 			}
+		}
+	}
+}
+
+// With both controls satisfied the same gate grows the vulnerable assertions,
+// including the public-shadow impact. This is the regression matrix for the
+// intentionally vulnerable half, and it runs in CI behind the same two-step
+// acknowledgement a person would perform by hand.
+func TestGateCoversTheVulnerableHalfWhenAcknowledged(t *testing.T) {
+	t.Setenv(vulnerable.AcknowledgementEnv, vulnerable.Acknowledgement)
+	t.Setenv(vulnerable.ProfileEnv, vulnerable.Profile)
+
+	stack, err := StartStack()
+	if err != nil {
+		t.Fatalf("StartStack: %v", err)
+	}
+	defer stack.Close()
+
+	results, err := RunAll(context.Background(), Options{
+		StateDir:        t.TempDir(),
+		Endpoints:       stack.Endpoints,
+		SkipContainment: true,
+		Trace:           io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	groups := map[string]int{}
+	for _, r := range results {
+		groups[r.Group]++
+		if !r.Pass {
+			t.Errorf("%s/%s: %s", r.Group, r.Name, r.Detail)
+		}
+	}
+	for _, group := range []string{"public-shadow", "scenario:vulnerable-public-shadow", "harness:vulnerable-public-shadow", "scenario:secure-against-public-shadow"} {
+		if groups[group] == 0 {
+			t.Errorf("no assertions ran in group %q", group)
 		}
 	}
 }

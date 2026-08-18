@@ -68,13 +68,15 @@ func TestLockDigestsMatchBuiltArtifacts(t *testing.T) {
 	}
 }
 
-// This slice delivers the secure path only: no public registry fixture may
-// carry a name from the private namespace.
-func TestNoPublicRegistryPublishesThePrivateNamespace(t *testing.T) {
+// A public shadow of the private namespace exists in exactly one place: the
+// fixture set that is marked as part of the intentionally vulnerable half, and
+// which nothing reaches without both opt-in controls.
+func TestOnlyAVulnerableFixtureSetPublishesTheShadow(t *testing.T) {
 	ids, err := RegistrySetIDs()
 	if err != nil {
 		t.Fatalf("RegistrySetIDs: %v", err)
 	}
+	shadows := 0
 	for _, id := range ids {
 		set, err := RegistrySet(id)
 		if err != nil {
@@ -84,8 +86,54 @@ func TestNoPublicRegistryPublishesThePrivateNamespace(t *testing.T) {
 			continue
 		}
 		for _, pkg := range set.Packages {
-			if strings.HasPrefix(pkg.Name, "@glasswing/") {
-				t.Errorf("public registry %q publishes %q", id, pkg.Name)
+			if !strings.HasPrefix(pkg.Name, "@glasswing/") {
+				continue
+			}
+			shadows++
+			if !set.Vulnerable {
+				t.Errorf("public registry %q publishes %q but is not marked vulnerable", id, pkg.Name)
+			}
+		}
+	}
+	if shadows != 1 {
+		t.Errorf("%d public shadow fixtures, want exactly 1", shadows)
+	}
+}
+
+// Every scenario reachable without acknowledging the vulnerable half must use
+// only fixture sets that are not part of it.
+func TestDefaultScenariosNeverTouchAVulnerableFixture(t *testing.T) {
+	ids, err := DefaultScenarioIDs()
+	if err != nil {
+		t.Fatalf("DefaultScenarioIDs: %v", err)
+	}
+	urls, err := RegistryURLs()
+	if err != nil {
+		t.Fatalf("RegistryURLs: %v", err)
+	}
+	byURL := map[string]string{}
+	for id, url := range urls {
+		byURL[url] = id
+	}
+	for _, id := range ids {
+		scenario, err := LoadScenario(id)
+		if err != nil {
+			t.Fatalf("LoadScenario(%q): %v", id, err)
+		}
+		if scenario.Vulnerable || scenario.Resolver != ResolverSecure {
+			t.Fatalf("scenario %q is reachable by default but is %q/%v", id, scenario.Resolver, scenario.Vulnerable)
+		}
+		policy, err := SourcePolicy(scenario.SourcePolicy)
+		if err != nil {
+			t.Fatalf("SourcePolicy(%q): %v", scenario.SourcePolicy, err)
+		}
+		for _, source := range policy.Sources {
+			set, err := RegistrySet(byURL[source.URL])
+			if err != nil {
+				t.Fatalf("RegistrySet: %v", err)
+			}
+			if set.Vulnerable {
+				t.Errorf("default scenario %q reaches vulnerable registry %q", id, set.ID)
 			}
 		}
 	}

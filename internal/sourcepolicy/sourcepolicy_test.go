@@ -124,3 +124,76 @@ func TestExactPatternMatchesOnlyItself(t *testing.T) {
 		t.Fatalf("Resolve error = %v, want ErrNoMapping", err)
 	}
 }
+
+func combinedPolicy() Policy {
+	p := policy()
+	p.Mappings[0] = Mapping{
+		Pattern: "@glasswing/*",
+		Mode:    ModeCombined,
+		Sources: []string{"glasswing-private", "community-public"},
+	}
+	return p
+}
+
+// A combined mapping binds nothing. Everything it pools may answer, and that is
+// the shape of policy this project exists to argue against.
+func TestCombinedMappingPoolsAndBindsNothing(t *testing.T) {
+	decision, err := combinedPolicy().Resolve("@glasswing/release-policy")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if decision.Mode != ModeCombined {
+		t.Fatalf("mode = %q", decision.Mode)
+	}
+	if decision.Bound.ID != "" {
+		t.Fatalf("a combined mapping bound %q", decision.Bound.ID)
+	}
+	if len(decision.Pool) != 2 || decision.Pool[0].ID != "glasswing-private" || decision.Pool[1].ID != "community-public" {
+		t.Fatalf("pool = %+v", decision.Pool)
+	}
+	if len(decision.Excluded) != 0 {
+		t.Fatalf("excluded = %+v", decision.Excluded)
+	}
+}
+
+func TestExclusiveMappingPoolsExactlyItsBoundSource(t *testing.T) {
+	decision, err := policy().Resolve("@glasswing/release-policy")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(decision.Pool) != 1 || decision.Pool[0].ID != decision.Bound.ID {
+		t.Fatalf("pool = %+v, bound = %q", decision.Pool, decision.Bound.ID)
+	}
+}
+
+func TestValidateRejectsMalformedCombinedMappings(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Policy)
+	}{
+		{"one source", func(p *Policy) { p.Mappings[0].Sources = []string{"glasswing-private"} }},
+		{"no sources", func(p *Policy) { p.Mappings[0].Sources = nil }},
+		{"unknown source", func(p *Policy) { p.Mappings[0].Sources = []string{"glasswing-private", "nowhere"} }},
+		{"repeated source", func(p *Policy) {
+			p.Mappings[0].Sources = []string{"glasswing-private", "glasswing-private"}
+		}},
+		{"both source and sources", func(p *Policy) { p.Mappings[0].Source = "glasswing-private" }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := combinedPolicy()
+			c.mutate(&p)
+			if err := p.Validate(); err == nil {
+				t.Fatal("Validate accepted a malformed combined mapping")
+			}
+		})
+	}
+}
+
+func TestExclusiveMappingMustNotCarryAPool(t *testing.T) {
+	p := policy()
+	p.Mappings[0].Sources = []string{"glasswing-private", "community-public"}
+	if err := p.Validate(); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("Validate error = %v, want ErrInvalidPolicy", err)
+	}
+}

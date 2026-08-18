@@ -19,6 +19,12 @@ const (
 	// source is excluded for that pattern: it is neither queried first nor
 	// used as a fallback when the bound source has nothing to offer.
 	ModeExclusive = "exclusive"
+	// ModeCombined pools several sources for one pattern, so a name is resolved
+	// across more than one trust domain at once. It is the shape of policy the
+	// demonstration exists to argue against, and only the opt-in combined-index
+	// resolver will act on it: the secure resolver fails closed when it sees a
+	// mapping that is not exclusive.
+	ModeCombined = "combined"
 )
 
 // Roles a source may declare. The role is a label for output; it grants
@@ -44,11 +50,17 @@ type Source struct {
 	URL  string `json:"url"`
 }
 
-// Mapping binds a dependency-name pattern to exactly one source.
+// Mapping binds a dependency-name pattern to a source, or — in combined mode —
+// to a pool of them.
 type Mapping struct {
 	Pattern string `json:"pattern"`
-	Source  string `json:"source"`
 	Mode    string `json:"mode"`
+	// Source names the single source of an exclusive mapping.
+	Source string `json:"source,omitempty"`
+	// Sources names the pool of a combined mapping, in the order a build tool
+	// would consult them. That order is display only: pooling is what matters,
+	// and the order changes nothing about which candidates are considered.
+	Sources []string `json:"sources,omitempty"`
 }
 
 // Policy is the checked-in source policy for one scenario.
@@ -64,10 +76,15 @@ const Format = "indexjack-source-policy/1"
 
 // Decision is the result of evaluating a policy for one dependency name.
 type Decision struct {
-	Name     string
-	Pattern  string
-	Mode     string
-	Bound    Source
+	Name    string
+	Pattern string
+	Mode    string
+	// Bound is the single source of an exclusive mapping. In combined mode it
+	// is the zero value: nothing is bound, which is the entire problem.
+	Bound Source
+	// Pool is every source a combined mapping considers, in declared order.
+	// For an exclusive mapping it holds the bound source alone.
+	Pool     []Source
 	Excluded []Source
 }
 
@@ -121,11 +138,30 @@ func (p Policy) Validate() error {
 			return fmt.Errorf("%w: duplicate pattern %q", ErrInvalidPolicy, m.Pattern)
 		}
 		patterns[m.Pattern] = struct{}{}
-		if m.Mode != ModeExclusive {
+		switch m.Mode {
+		case ModeExclusive:
+			if m.Source == "" || len(m.Sources) != 0 {
+				return fmt.Errorf("%w: exclusive mapping %q takes one source", ErrInvalidPolicy, m.Pattern)
+			}
+			if _, ok := p.Source(m.Source); !ok {
+				return fmt.Errorf("%w: %q", ErrUnknownSource, m.Source)
+			}
+		case ModeCombined:
+			if m.Source != "" || len(m.Sources) < 2 {
+				return fmt.Errorf("%w: combined mapping %q takes two or more sources", ErrInvalidPolicy, m.Pattern)
+			}
+			seen := make(map[string]struct{}, len(m.Sources))
+			for _, id := range m.Sources {
+				if _, ok := p.Source(id); !ok {
+					return fmt.Errorf("%w: %q", ErrUnknownSource, id)
+				}
+				if _, dup := seen[id]; dup {
+					return fmt.Errorf("%w: combined mapping %q repeats source %q", ErrInvalidPolicy, m.Pattern, id)
+				}
+				seen[id] = struct{}{}
+			}
+		default:
 			return fmt.Errorf("%w: %q", ErrUnsupportedMode, m.Mode)
-		}
-		if _, ok := p.Source(m.Source); !ok {
-			return fmt.Errorf("%w: %q", ErrUnknownSource, m.Source)
 		}
 	}
 	return nil
@@ -167,23 +203,32 @@ func (p Policy) Resolve(name string) (Decision, error) {
 	}
 
 	m := matched[0]
-	bound, ok := p.Source(m.Source)
-	if !ok {
-		return Decision{}, fmt.Errorf("%w: %q", ErrUnknownSource, m.Source)
+	decision := Decision{Name: name, Pattern: m.Pattern, Mode: m.Mode}
+	pooled := make(map[string]struct{})
+	if m.Mode == ModeCombined {
+		for _, id := range m.Sources {
+			source, ok := p.Source(id)
+			if !ok {
+				return Decision{}, fmt.Errorf("%w: %q", ErrUnknownSource, id)
+			}
+			decision.Pool = append(decision.Pool, source)
+			pooled[id] = struct{}{}
+		}
+	} else {
+		bound, ok := p.Source(m.Source)
+		if !ok {
+			return Decision{}, fmt.Errorf("%w: %q", ErrUnknownSource, m.Source)
+		}
+		decision.Bound = bound
+		decision.Pool = []Source{bound}
+		pooled[bound.ID] = struct{}{}
 	}
-	var excluded []Source
 	for _, s := range p.Sources {
-		if s.ID != bound.ID {
-			excluded = append(excluded, s)
+		if _, ok := pooled[s.ID]; !ok {
+			decision.Excluded = append(decision.Excluded, s)
 		}
 	}
-	return Decision{
-		Name:     name,
-		Pattern:  m.Pattern,
-		Mode:     m.Mode,
-		Bound:    bound,
-		Excluded: excluded,
-	}, nil
+	return decision, nil
 }
 
 func matches(pattern, name string) bool {

@@ -1,0 +1,29 @@
+{
+  "format": "indexjack-registry-fixtures/1",
+  "id": "community-public-shadow",
+  "role": "public",
+  "revision": "community-public-shadow/1",
+  "host": "packages-shadow.public.example",
+  "port": 8080,
+  "vulnerable": true,
+  "packages": [
+    {
+      "name": "@glasswing/release-policy",
+      "versions": [
+        {
+          "version": "9.9.9",
+          "package": "release-policy-9.9.9-public-shadow"
+        }
+      ]
+    },
+    {
+      "name": "community-format",
+      "versions": [
+        {
+          "version": "2.1.0",
+          "package": "community-format-2.1.0"
+        }
+      ]
+    }
+  ]
+}

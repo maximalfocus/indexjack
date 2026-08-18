@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"indexjack/internal/audit"
+	"indexjack/internal/combinedindex"
 	"indexjack/internal/containment"
 	"indexjack/internal/fixtures"
 	"indexjack/internal/harness"
@@ -29,6 +30,7 @@ import (
 	"indexjack/internal/resolver"
 	"indexjack/internal/sourcepolicy"
 	"indexjack/internal/trace"
+	"indexjack/internal/vulnerable"
 )
 
 // Options configures a verification run.
@@ -71,9 +73,71 @@ type expectation struct {
 	failureStage    string
 	reportResolved  bool
 	reconciliation  string
+	// integrity defaults to a verified verdict; the vulnerable resolver never
+	// verifies anything, so it names its own.
+	integrity string
+	// queried defaults to the selected source; a combined pool names every
+	// source it asked, in order.
+	queried string
 	// receipts is the exact number of requests each registry must report
 	// having received, from its own signed account of the run.
 	receipts map[string]int
+}
+
+func (e expectation) wantIntegrity() string {
+	if e.integrity != "" {
+		return e.integrity
+	}
+	return resolver.IntegrityVerified
+}
+
+func (e expectation) wantQueried() string {
+	if e.queried != "" {
+		return e.queried
+	}
+	return e.selectedSource
+}
+
+// vulnerableExpectations are the outcomes of the intentionally vulnerable half.
+// They are asserted only when both opt-in controls are satisfied; otherwise the
+// gate asserts that they are refused instead.
+var vulnerableExpectations = []expectation{
+	{
+		scenario:        "vulnerable-public-shadow",
+		clientResult:    releasegate.ResultBuildOK,
+		selectedSource:  "community-public-shadow",
+		selectedVersion: "9.9.9",
+		integrity:       combinedindex.IntegrityUnverified,
+		queried:         "glasswing-private,community-public-shadow",
+		verdict:         pkgarchive.VerdictApprove,
+		mutation:        releasegate.MutationApproved,
+		ledgerChanged:   true,
+		ledgerEntries:   1,
+		auditEvents:     []string{audit.EventReleaseApproved},
+		reportResolved:  true,
+		reconciliation:  harness.ReconcileFail,
+		receipts: map[string]int{
+			"glasswing-private": 1, "community-public-shadow": 4,
+			"community-public": 0, "glasswing-private-missing": 0, "glasswing-private-tampered": 0,
+		},
+	},
+	{
+		scenario:        "secure-against-public-shadow",
+		clientResult:    releasegate.ResultBuildOK,
+		selectedSource:  "glasswing-private",
+		selectedVersion: "1.4.2",
+		verdict:         pkgarchive.VerdictReject,
+		mutation:        releasegate.MutationNone,
+		ledgerChanged:   false,
+		ledgerEntries:   0,
+		auditEvents:     []string{audit.EventReleaseRejected},
+		reportResolved:  true,
+		reconciliation:  harness.ReconcilePass,
+		receipts: map[string]int{
+			"glasswing-private": 2, "community-public-shadow": 2,
+			"community-public": 0, "glasswing-private-missing": 0, "glasswing-private-tampered": 0,
+		},
+	},
 }
 
 // expectations is the checked-in outcome of every enumerated scenario. Values
@@ -227,6 +291,22 @@ func RunAll(ctx context.Context, opts Options) ([]Result, error) {
 	if err := verifyHarnessSurface(ctx, rec, opts); err != nil {
 		return rec.results, err
 	}
+	if err := verifyOptIn(ctx, rec, opts); err != nil {
+		return rec.results, err
+	}
+	if vulnerable.Acknowledged() {
+		for _, want := range vulnerableExpectations {
+			if _, err := verifyScenario(ctx, rec, opts, want); err != nil {
+				return rec.results, err
+			}
+			if err := verifyHarness(ctx, rec, opts, want); err != nil {
+				return rec.results, err
+			}
+		}
+		if err := verifyPublicShadowImpact(ctx, rec, opts); err != nil {
+			return rec.results, err
+		}
+	}
 
 	// Two different failure causes must be indistinguishable to the build's
 	// consumer: one is "there is no such artifact", the other is "its bytes
@@ -278,7 +358,7 @@ func verifyFixtures(rec *recorder) {
 	for _, a := range first {
 		byIdentity[a.Name+"@"+a.Version+"#"+a.SHA256] = a
 	}
-	publishedOK, publicShadow := true, ""
+	publishedOK, unmarkedShadow, shadows := true, "", 0
 	for _, id := range setIDs {
 		set, err := fixtures.RegistrySet(id)
 		if err != nil {
@@ -287,7 +367,10 @@ func verifyFixtures(rec *recorder) {
 		}
 		for _, pkg := range set.Packages {
 			if set.Role == sourcepolicy.RolePublic && strings.HasPrefix(pkg.Name, "@glasswing/") {
-				publicShadow = fmt.Sprintf("%s publishes %s", id, pkg.Name)
+				shadows++
+				if !set.Vulnerable {
+					unmarkedShadow = fmt.Sprintf("%s publishes %s", id, pkg.Name)
+				}
 			}
 			for _, a := range pkg.Versions {
 				key := pkg.Name + "@" + a.Version + "#" + pkgarchive.Digest(a.Bytes)
@@ -299,8 +382,8 @@ func verifyFixtures(rec *recorder) {
 	}
 	rec.add(group, "published_artifacts_are_built_from_source", publishedOK,
 		"every published version matches an artifact built from checked-in sources")
-	rec.add(group, "no_public_shadow_of_private_namespace", publicShadow == "",
-		"%s", valueOr(publicShadow, "no public registry fixture publishes a @glasswing/* name"))
+	rec.add(group, "public_shadow_exists_only_in_a_vulnerable_fixture_set", unmarkedShadow == "" && shadows == 1,
+		"%s", valueOr(unmarkedShadow, fmt.Sprintf("%d public shadow fixture(s), all marked vulnerable", shadows)))
 }
 
 // verifyRegistrySurface probes each running registry at its own boundary. It
@@ -324,6 +407,26 @@ func verifyRegistrySurface(ctx context.Context, rec *recorder, opts Options) err
 		set, err := fixtures.RegistrySet(id)
 		if err != nil {
 			return err
+		}
+
+		// A registry belonging to the intentionally vulnerable half is not
+		// merely refused in a run that has not acknowledged it: it is not
+		// running, and its name does not resolve.
+		if set.Vulnerable && !vulnerable.Acknowledged() {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+registry.MetadataPath+"?name=community-format", nil)
+			if err != nil {
+				return err
+			}
+			resp, err := client.Do(req)
+			if err == nil {
+				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+				_ = resp.Body.Close()
+			}
+			rec.add(group, id+"/not_running_without_the_opt_in", err != nil, "%s", valueOr(errText(err), "the vulnerable registry answered"))
+			continue
+		}
+		if set.Vulnerable {
+			rec.add(group, id+"/labels_itself_as_vulnerable", true, "checked below with every other response header")
 		}
 
 		probes := []struct {
@@ -358,6 +461,12 @@ func verifyRegistrySurface(ctx context.Context, rec *recorder, opts Options) err
 				rec.add(group, id+"/identifies_role_and_revision",
 					resp.Header.Get(registry.HeaderRole) == set.Role && resp.Header.Get(registry.HeaderRevision) == set.Revision,
 					"role=%q revision=%q", resp.Header.Get(registry.HeaderRole), resp.Header.Get(registry.HeaderRevision))
+				label := resp.Header.Get(vulnerable.LabelHeader)
+				if set.Vulnerable {
+					rec.expectString(group, id+"/every_response_is_labelled", label, vulnerable.Label)
+				} else {
+					rec.expectString(group, id+"/carries_no_vulnerable_label", label, "")
+				}
 			}
 		}
 	}
@@ -417,19 +526,21 @@ func verifyScenario(ctx context.Context, rec *recorder, opts Options, want expec
 		}
 		rec.expectString(group, "selected_source", source, want.selectedSource)
 		rec.expectString(group, "selected_version", version, want.selectedVersion)
-		rec.expectString(group, "integrity_verdict", integrity, resolver.IntegrityVerified)
+		rec.expectString(group, "integrity_verdict", integrity, want.wantIntegrity())
 
 		queried := ""
 		if out.ReleasePolicy != nil {
 			queried = strings.Join(out.ReleasePolicy.Queried, ",")
 		}
-		rec.expectString(group, "queried_sources", queried, want.selectedSource)
+		rec.expectString(group, "queried_sources", queried, want.wantQueried())
 	}
 
 	rec.add(group, "report_format_resolved", (out.ReportFormat != nil) == want.reportResolved,
 		"resolved=%v (expected %v)", out.ReportFormat != nil, want.reportResolved)
 	if want.reportResolved && out.ReportFormat != nil {
-		rec.expectString(group, "report_format_source", out.ReportFormat.Selected.Source, "community-public")
+		rec.add(group, "report_format_from_a_public_source",
+			out.ReportFormat.Policy.Bound.Role == sourcepolicy.RolePublic,
+			"%s (%s)", out.ReportFormat.Selected.Source, out.ReportFormat.Policy.Bound.Role)
 	}
 
 	changed := out.LedgerBefore != out.LedgerAfter
@@ -543,10 +654,14 @@ func verifyHarness(ctx context.Context, rec *recorder, opts Options, want expect
 			"signature verified=%v", receipt.SignatureVerified)
 		if receipt.Role == sourcepolicy.RolePublic {
 			for _, request := range receipt.Requests {
-				if strings.HasPrefix(request.Name, "@glasswing/") {
-					rec.add(group, "public_registry_never_asked_about_private_namespace", false,
-						"%s was asked for %q", receipt.Source, request.Name)
+				if !strings.HasPrefix(request.Name, "@glasswing/") {
+					continue
 				}
+				// A public source being asked about the private namespace is
+				// the flaw itself: forbidden everywhere except in the run that
+				// exists to demonstrate it.
+				rec.add(group, "public_registry_asked_about_private_namespace", first.Scenario.Vulnerable,
+					"%s was asked for %q", receipt.Source, request.Name)
 			}
 		}
 	}
@@ -564,6 +679,21 @@ func verifyHarness(ctx context.Context, rec *recorder, opts Options, want expect
 	if want.clientResult == releasegate.ResultBuildFailed {
 		rec.add(group, "no_public_request_after_failing_closed", publicTotal == 0,
 			"%d public request(s)", publicTotal)
+	}
+	if !first.Scenario.Vulnerable {
+		privateNamespaceAtPublic := 0
+		for _, receipt := range first.Receipts {
+			if receipt.Role != sourcepolicy.RolePublic {
+				continue
+			}
+			for _, request := range receipt.Requests {
+				if strings.HasPrefix(request.Name, "@glasswing/") {
+					privateNamespaceAtPublic++
+				}
+			}
+		}
+		rec.add(group, "private_namespace_never_reaches_a_public_source", privateNamespaceAtPublic == 0,
+			"%d such request(s)", privateNamespaceAtPublic)
 	}
 
 	// A transcript is evidence a learner reads and a reviewer publishes. It must
@@ -606,7 +736,10 @@ func verifyHarnessSurface(ctx context.Context, rec *recorder, opts Options) erro
 	if err != nil {
 		return err
 	}
-	ids, err := fixtures.ScenarioIDs()
+	ids, err := fixtures.DefaultScenarioIDs()
+	if vulnerable.Acknowledged() {
+		ids, err = fixtures.ScenarioIDs()
+	}
 	if err != nil {
 		return err
 	}
@@ -614,7 +747,7 @@ func verifyHarnessSurface(ctx context.Context, rec *recorder, opts Options) erro
 	for _, t := range transcripts {
 		covered = append(covered, t.Scenario.ID)
 	}
-	rec.add(group, "matrix_covers_every_scenario", strings.Join(covered, ",") == strings.Join(ids, ","),
+	rec.add(group, "matrix_covers_every_reachable_scenario", strings.Join(covered, ",") == strings.Join(ids, ","),
 		"[%s]", strings.Join(covered, ","))
 
 	if opts.Trace != nil {
@@ -624,6 +757,141 @@ func verifyHarnessSurface(ctx context.Context, rec *recorder, opts Options) erro
 		fmt.Fprintln(opts.Trace)
 	}
 	return nil
+}
+
+// verifyOptIn asserts the two controls themselves: each one alone refuses, both
+// together admit, and in a run that has not acknowledged anything the
+// vulnerable half is not merely refused but absent.
+func verifyOptIn(ctx context.Context, rec *recorder, opts Options) error {
+	const group = "opt-in"
+
+	for _, c := range []struct {
+		name            string
+		acknowledgement string
+		profile         string
+		wantErr         bool
+	}{
+		{"neither_control", "", "", true},
+		{"acknowledgement_alone", vulnerable.Acknowledgement, "", true},
+		{"profile_alone", "", vulnerable.Profile, true},
+		{"both_controls", vulnerable.Acknowledgement, vulnerable.Profile, false},
+	} {
+		err := vulnerable.Check(c.acknowledgement, c.profile)
+		rec.add(group, c.name, (err != nil) == c.wantErr, "%v", valueOr(errText(err), "admitted"))
+	}
+
+	acknowledged := vulnerable.Acknowledged()
+	rec.add(group, "acknowledged_in_this_run", true, "%t", acknowledged)
+
+	defaults, err := fixtures.DefaultScenarioIDs()
+	if err != nil {
+		return err
+	}
+	all, err := fixtures.ScenarioIDs()
+	if err != nil {
+		return err
+	}
+	rec.add(group, "vulnerable_scenarios_are_separate", len(all) > len(defaults),
+		"%d reachable by default, %d in total", len(defaults), len(all))
+
+	for _, scenario := range all {
+		loaded, err := fixtures.LoadScenario(scenario)
+		if err != nil {
+			return err
+		}
+		if !loaded.Vulnerable {
+			continue
+		}
+		if acknowledged {
+			continue
+		}
+		_, err = harness.Run(ctx, harness.Options{
+			ScenarioID: scenario,
+			StateDir:   filepath.Join(opts.StateDir, "opt-in", scenario),
+			Endpoints:  opts.Endpoints,
+		})
+		rec.add(group, "refused/"+scenario, errors.Is(err, vulnerable.ErrNotAcknowledged), "%v", err)
+	}
+	return nil
+}
+
+// verifyPublicShadowImpact asserts the demonstration's central claim: under the
+// combined-index resolver the public shadow decides the release, and the bytes
+// that decided it are the public fixture's.
+func verifyPublicShadowImpact(ctx context.Context, rec *recorder, opts Options) error {
+	const group = "public-shadow"
+
+	transcript, err := harness.Run(ctx, harness.Options{
+		ScenarioID: "vulnerable-public-shadow",
+		StateDir:   filepath.Join(opts.StateDir, "public-shadow"),
+		Endpoints:  opts.Endpoints,
+	})
+	if err != nil {
+		return err
+	}
+	artifacts, err := fixtures.Artifacts()
+	if err != nil {
+		return err
+	}
+	shadowDigest, privateDigest := "", ""
+	for _, a := range artifacts {
+		switch a.Package {
+		case "release-policy-9.9.9-public-shadow":
+			shadowDigest = a.SHA256
+		case "release-policy-1.4.2":
+			privateDigest = a.SHA256
+		}
+	}
+
+	if len(transcript.Dependencies) == 0 {
+		rec.add(group, "resolved_the_policy_dependency", false, "no dependency recorded")
+		return nil
+	}
+	dep := transcript.Dependencies[0]
+
+	offered := map[string]string{}
+	for _, c := range dep.Candidates {
+		offered[c.Source] = c.Version
+	}
+	rec.add(group, "both_trust_domains_offered_the_same_name",
+		offered["glasswing-private"] != "" && offered["community-public-shadow"] == "9.9.9",
+		"private %s, public %s", valueOr(offered["glasswing-private"], "none"), valueOr(offered["community-public-shadow"], "none"))
+	rec.expectString(group, "highest_version_wins", dep.Selected.Version, "9.9.9")
+	rec.expectString(group, "selected_origin_is_public", dep.Selected.Role, sourcepolicy.RolePublic)
+	rec.expectString(group, "selected_bytes_are_the_public_fixture", dep.Selected.SHA256, shadowDigest)
+	rec.add(group, "selected_bytes_are_not_the_private_artifact", dep.Selected.SHA256 != privateDigest,
+		"%s", dep.Selected.SHA256)
+	rec.expectString(group, "no_lock_was_enforced", transcript.LockEnforcement, harness.LockUnenforced)
+	rec.expectString(group, "transcript_is_labelled", transcript.Warning, vulnerable.Label)
+	rec.expectString(group, "unsafe_candidate_approved", transcript.Release.PolicyVerdict, pkgarchive.VerdictApprove)
+	rec.add(group, "exactly_one_unexpected_release_row",
+		transcript.Ledger.Changed && transcript.Ledger.Entries == 1,
+		"changed=%v entries=%d", transcript.Ledger.Changed, transcript.Ledger.Entries)
+	rec.expectString(group, "reconciliation_fails", transcript.Reconciliation.Result, harness.ReconcileFail)
+	rec.expectString(group, "reconciliation_names_the_origin", transcript.Reconciliation.Origin, "community-public-shadow")
+	rec.expectString(group, "reconciliation_names_the_digest", transcript.Reconciliation.Digest, shadowDigest)
+
+	askedForShadow := false
+	for _, receipt := range transcript.Receipts {
+		if receipt.Source != "community-public-shadow" {
+			continue
+		}
+		for _, request := range receipt.Requests {
+			if request.Name == "@glasswing/release-policy" && request.Version == "9.9.9" {
+				askedForShadow = true
+			}
+		}
+	}
+	rec.add(group, "receipts_prove_the_public_fixture_served_it", askedForShadow,
+		"the public fixture reports serving @glasswing/release-policy@9.9.9")
+	return nil
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func dialer(opts Options) func(sourcepolicy.Source) (resolver.Fetcher, error) {

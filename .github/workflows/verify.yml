@@ -21,6 +21,14 @@ jobs:
       - name: Build, start the immutable registries, and run the gate
         run: docker compose run --rm --build verify
 
+      # The intentionally vulnerable half runs only behind the same two
+      # deliberate acts a person performs by hand: a non-default profile and an
+      # explicit acknowledgement.
+      - name: Two-step opt-in — the intentionally vulnerable half
+        env:
+          ALLOW_VULNERABLE_DEMO: "true"
+        run: docker compose --profile vulnerable run --rm verify-vulnerable
+
       - name: Tear down
         if: always()
-        run: docker compose down -v --remove-orphans
+        run: docker compose --profile vulnerable down -v --remove-orphans

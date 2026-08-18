@@ -47,7 +47,7 @@ func TestValidateRejectsMalformedManifests(t *testing.T) {
 		{"no alias", func(m *Manifest) { m.Dependencies[0].Alias = "" }},
 		{"no name", func(m *Manifest) { m.Dependencies[0].Name = "" }},
 		{"duplicate alias", func(m *Manifest) { m.Dependencies[1].Alias = m.Dependencies[0].Alias }},
-		{"unsupported range", func(m *Manifest) { m.Dependencies[0].Range = ">=1.4.2" }},
+		{"unsupported range", func(m *Manifest) { m.Dependencies[0].Range = "~1.4.2" }},
 		{"empty range", func(m *Manifest) { m.Dependencies[0].Range = "" }},
 	}
 	for _, c := range cases {

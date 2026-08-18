@@ -88,7 +88,7 @@ func cmpUint(a, b uint64) int {
 	return 0
 }
 
-// RangeKind enumerates the two supported range forms.
+// RangeKind enumerates the supported range forms.
 type RangeKind string
 
 const (
@@ -97,6 +97,10 @@ const (
 	// KindCaret matches versions at or above the base within the same major
 	// component: "^1.4.2".
 	KindCaret RangeKind = "caret"
+	// KindAtLeast matches every version at or above the base, with no upper
+	// bound at all: ">=1.4.2". It is the permissive form, and permissiveness is
+	// one half of what makes a name resolvable to something nobody chose.
+	KindAtLeast RangeKind = "at-least"
 )
 
 // Range is a parsed dependency range.
@@ -105,13 +109,17 @@ type Range struct {
 	Base Version
 }
 
-// ParseRange reads "1.4.2" (exact) or "^1.4.2" (caret).
+// ParseRange reads "1.4.2" (exact), "^1.4.2" (caret) or ">=1.4.2" (at-least).
 func ParseRange(s string) (Range, error) {
 	kind := KindExact
 	body := s
-	if strings.HasPrefix(s, "^") {
+	switch {
+	case strings.HasPrefix(s, "^"):
 		kind = KindCaret
 		body = strings.TrimPrefix(s, "^")
+	case strings.HasPrefix(s, ">="):
+		kind = KindAtLeast
+		body = strings.TrimPrefix(s, ">=")
 	}
 	v, err := Parse(body)
 	if err != nil {
@@ -122,8 +130,11 @@ func ParseRange(s string) (Range, error) {
 
 // String renders the canonical spelling of r.
 func (r Range) String() string {
-	if r.Kind == KindCaret {
+	switch r.Kind {
+	case KindCaret:
 		return "^" + r.Base.String()
+	case KindAtLeast:
+		return ">=" + r.Base.String()
 	}
 	return r.Base.String()
 }
@@ -135,6 +146,8 @@ func (r Range) Satisfies(v Version) bool {
 		return Compare(v, r.Base) == 0
 	case KindCaret:
 		return v.Major == r.Base.Major && Compare(v, r.Base) >= 0
+	case KindAtLeast:
+		return Compare(v, r.Base) >= 0
 	}
 	return false
 }

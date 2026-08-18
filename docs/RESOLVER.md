@@ -31,11 +31,19 @@ spelling are rejected, so one version has one representation. Two range forms ex
 |---|---|
 | `1.4.2` | exactly that version |
 | `^1.4.2` | that version or later, within the same major component |
+| `>=1.4.2` | that version or later, with no upper bound at all |
+
+The last form is the permissive one, and permissiveness is half of what makes a
+name resolvable to something nobody chose: a range with no ceiling will accept
+`9.9.9` from anywhere that is allowed to answer.
 
 ### Source policy
 
-A mapping binds a pattern — a literal name, or a literal prefix with one trailing `*` — to exactly one
-source, in `exclusive` mode. Exclusive means both of the things people usually mean separately:
+A mapping binds a pattern — a literal name, or a literal prefix with one trailing `*` — to a source.
+There are two modes.
+
+**`exclusive`** binds the pattern to exactly one source. It means both of the things people usually
+mean separately:
 
 - the other sources are **not queried** for a matching name; and
 - the other sources are **not a fallback** when the bound source has nothing to offer.
@@ -44,6 +52,12 @@ The policy also lists its sources in a display order. That order is what a build
 its index list. It decides nothing. A trace always renders `index display order` and `source policy`
 as separate fields, because "the private index is listed first" and "the private index is the only
 one allowed to answer" are different claims, and only the second one is a control.
+
+**`combined`** pools two or more sources for one pattern, so a name is resolved across more than one
+trust domain at once. Nothing is bound; every pooled source may answer. This is the shape of policy
+the demonstration exists to argue against, and the secure resolver refuses it outright — a mapping
+that is not exclusive fails closed as `SOURCE_POLICY_NOT_EXCLUSIVE`. Only the opt-in combined-index
+resolver acts on it.
 
 Exactly one mapping must match a name. No match and more than one match both fail closed: a build
 that cannot say where a name comes from must not guess.
@@ -109,6 +123,7 @@ transcript and in exactly one structured audit record, and they never reach the 
 | `SOURCE_POLICY_INVALID` | `source_policy` | the policy document itself is malformed |
 | `SOURCE_POLICY_UNRESOLVED` | `source_policy` | no mapping matches the name |
 | `SOURCE_POLICY_AMBIGUOUS` | `source_policy` | more than one mapping matches the name |
+| `SOURCE_POLICY_NOT_EXCLUSIVE` | `source_policy` | the mapping pools sources instead of binding one |
 | `LOCK_INVALID` | `lock` | the lock document itself is malformed |
 | `LOCK_MISSING` | `lock` | no record for the alias |
 | `LOCK_DUPLICATE` | `lock` | more than one record for the alias |
@@ -145,3 +160,35 @@ Because both kinds are enumerated, a package cannot introduce a new instruction 
 and nothing in an artifact is ever evaluated, imported, compiled, deserialized into behaviour, or
 executed. A real dependency ordinarily *does* contain executable code; this project deliberately
 stops at the trust decision and proves the consequence with inert data instead.
+
+## The other resolver
+
+The demonstration ships a second, intentionally vulnerable resolver. It is reachable only behind two
+deliberate opt-in controls (see the README), and it exists to be compared against the one above.
+
+The difference between them is deliberately small, because in real builds the difference is also
+small — a configuration choice, not a bug:
+
+| | secure | combined-index |
+|---|---|---|
+| sources asked | exactly the one bound to the name | every source in the pool |
+| selection | the locked version from the bound source | the highest compatible version across the merged answers |
+| lock | name, version, source, size and digest, all verified before content is read | none; its configuration has no lock field at all |
+| integrity verdict | `verified` | `unverified` — it computes a digest and compares it to nothing |
+
+Its rule, printed in every transcript it produces:
+
+> merge the compatible candidates offered by every pooled source and select the highest semantic
+> version; ties are broken by the order the sources are listed in the policy, then by source id
+
+Everything else is shared: the same hardened data-only artifact parser, the same release gate, the
+same fixtures, the same transcript schema. The vulnerable resolver selects the wrong artifact; it
+does not run it, and no artifact in this project is executable by anything.
+
+Two consequences are worth stating plainly, because they are the lesson rather than the mechanism:
+
+- **Listing the private source first would not help.** Pool order is a display detail; the merged set
+  is compared by version alone, so a higher public version wins wherever it was listed.
+- **Printing a digest is not checking one.** The vulnerable transcript shows the selected digest in
+  full, and that digest was never compared against anything. A digest you display and do not verify
+  is a label.

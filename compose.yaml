@@ -3,6 +3,12 @@
 #   docker compose run --rm --build verify   # build, start the registries, run the whole gate
 #   docker compose down -v                   # tear everything down
 #
+# The intentionally vulnerable half is not part of that. Reaching it takes two
+# separate deliberate acts — a non-default profile and an explicit
+# acknowledgement — and either one alone fails:
+#
+#   ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable run --rm verify-vulnerable
+#
 # The runtime network is internal: there is no default gateway, no route to any
 # external host, and no published port. The `.example` hostnames are reserved
 # documentation labels that resolve only through this network's aliases.
@@ -134,6 +140,79 @@ services:
       registry-private-tampered:
         condition: service_healthy
       registry-public:
+        condition: service_healthy
+    networks: [demo]
+
+  # ---------------------------------------------------------------------------
+  # The intentionally vulnerable half. Every service below exists only under the
+  # non-default "vulnerable" profile, and every one of them also requires
+  # ALLOW_VULNERABLE_DEMO=true. Neither control alone is enough.
+  # ---------------------------------------------------------------------------
+
+  # The untrusted publisher domain in the state where someone has published a
+  # package with the same name as the private one.
+  registry-public-shadow:
+    <<: *hardened
+    profiles: [vulnerable]
+    command: ["registry", "--fixtures", "community-public-shadow", "--listen", ":8080"]
+    environment:
+      INDEXJACK_COMPOSE_PROFILE: vulnerable
+      ALLOW_VULNERABLE_DEMO: ${ALLOW_VULNERABLE_DEMO:-}
+    healthcheck:
+      <<: *registry-health
+      test: ["CMD", "/usr/local/bin/indexjack", "healthcheck", "--address", "127.0.0.1:8080"]
+    networks:
+      demo:
+        aliases: [packages-shadow.public.example]
+
+  # The same gate as `verify`, with both opt-in controls satisfied, so it also
+  # asserts the vulnerable path's outcome.
+  verify-vulnerable:
+    <<: *hardened
+    profiles: [vulnerable]
+    command: ["verify", "--state-dir", "/run/indexjack"]
+    environment:
+      INDEXJACK_COMPOSE_PROFILE: vulnerable
+      ALLOW_VULNERABLE_DEMO: ${ALLOW_VULNERABLE_DEMO:-}
+    tmpfs:
+      - /run/indexjack:mode=0700,uid=65532,gid=65532
+    depends_on:
+      test:
+        condition: service_completed_successfully
+      registry-private:
+        condition: service_healthy
+      registry-private-missing:
+        condition: service_healthy
+      registry-private-tampered:
+        condition: service_healthy
+      registry-public:
+        condition: service_healthy
+      registry-public-shadow:
+        condition: service_healthy
+    networks: [demo]
+
+  # Manual exploration of the vulnerable half:
+  #   ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable run --rm \
+  #     vulnerable harness --scenario vulnerable-public-shadow
+  vulnerable:
+    <<: *hardened
+    profiles: [vulnerable]
+    command: ["harness", "--scenario", "vulnerable-public-shadow"]
+    environment:
+      INDEXJACK_COMPOSE_PROFILE: vulnerable
+      ALLOW_VULNERABLE_DEMO: ${ALLOW_VULNERABLE_DEMO:-}
+    tmpfs:
+      - /run/indexjack:mode=0700,uid=65532,gid=65532
+    depends_on:
+      registry-private:
+        condition: service_healthy
+      registry-private-missing:
+        condition: service_healthy
+      registry-private-tampered:
+        condition: service_healthy
+      registry-public:
+        condition: service_healthy
+      registry-public-shadow:
         condition: service_healthy
     networks: [demo]
 

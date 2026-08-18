@@ -28,6 +28,7 @@ import (
 	"indexjack/internal/releasegate"
 	"indexjack/internal/trace"
 	"indexjack/internal/verify"
+	"indexjack/internal/vulnerable"
 )
 
 // defaultStateDir is the disposable tmpfs the containers mount. It is the only
@@ -105,6 +106,14 @@ func runRegistry(ctx context.Context, args []string) error {
 	set, err := fixtures.RegistrySet(*fixtureSet)
 	if err != nil {
 		return err
+	}
+	// A registry fixture set that carries intentionally vulnerable material
+	// does not start without both opt-in controls.
+	if set.Vulnerable {
+		if err := vulnerable.Gate(); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "warning: registry %s serves %s\n", set.ID, vulnerable.Label)
 	}
 	boundary, err := fixtures.ReceiptBoundary()
 	if err != nil {
@@ -293,8 +302,23 @@ func listScenarios() error {
 	if err != nil {
 		return err
 	}
+	acknowledged := vulnerable.Acknowledged()
+	withheld := 0
 	for _, s := range scenarios {
-		fmt.Printf("%-26s %s\n", s.ID, s.Summary)
+		if s.Vulnerable && !acknowledged {
+			withheld++
+			continue
+		}
+		label := ""
+		if s.Vulnerable {
+			label = "  [" + vulnerable.Label + "]"
+		}
+		fmt.Printf("%-30s %s%s\n", s.ID, s.Summary, label)
+	}
+	if withheld > 0 {
+		fmt.Printf("\n%d further scenario(s) belong to the intentionally vulnerable half.\n"+
+			"Reaching them takes both the %q container profile and %s=%s.\n",
+			withheld, vulnerable.Profile, vulnerable.AcknowledgementEnv, vulnerable.Acknowledgement)
 	}
 	return nil
 }
