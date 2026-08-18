@@ -354,3 +354,31 @@ func TestResolverConfigurationHasNoWeakeningSwitch(t *testing.T) {
 		}
 	}
 }
+
+// The secure resolver will not act on a policy that pools sources for a name.
+// It is not that it would choose badly; it is that "which source" is the
+// decision under test, and a pool has not made it.
+func TestSecureResolverRefusesANonExclusiveBinding(t *testing.T) {
+	s := startStack(t)
+	cfg := config(t, s, "default", "default")
+	cfg.Policy.Mappings[0] = sourcepolicy.Mapping{
+		Pattern: "@glasswing/*",
+		Mode:    sourcepolicy.ModeCombined,
+		Sources: []string{"glasswing-private", "community-public"},
+	}
+
+	_, err := Resolve(context.Background(), cfg, dependency(t, "default", "release-policy"))
+	failure, ok := AsFailure(err)
+	if !ok || failure.Class != ClassSourcePolicyNotExclusive {
+		t.Fatalf("failure = %v, want %s", err, ClassSourcePolicyNotExclusive)
+	}
+	if failure.Stage != StageSourcePolicy {
+		t.Fatalf("stage = %q", failure.Stage)
+	}
+	// It refuses before contacting anything at all.
+	for _, id := range []string{"glasswing-private", "community-public"} {
+		if got := s.requestCount(t, id); got != 0 {
+			t.Errorf("registry %q received %d requests", id, got)
+		}
+	}
+}

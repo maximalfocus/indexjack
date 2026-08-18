@@ -33,6 +33,7 @@ import (
 	"indexjack/internal/releasegate"
 	"indexjack/internal/resolver"
 	"indexjack/internal/sourcepolicy"
+	"indexjack/internal/vulnerable"
 )
 
 // Format is the transcript document version.
@@ -59,9 +60,13 @@ type Request struct {
 
 // SourcePolicy is what policy decided about where it may come from.
 type SourcePolicy struct {
-	Pattern  string   `json:"pattern"`
-	Mode     string   `json:"mode"`
-	Bound    string   `json:"bound"`
+	Pattern string `json:"pattern"`
+	Mode    string `json:"mode"`
+	// Bound is the single source of an exclusive mapping, and empty under a
+	// combined one — where nothing is bound, which is the point.
+	Bound string `json:"bound"`
+	// Pool is every source the mapping considers.
+	Pool     []string `json:"pool"`
 	Excluded []string `json:"excluded"`
 }
 
@@ -165,22 +170,35 @@ type Scenario struct {
 	Manifest     string `json:"manifest"`
 	Lock         string `json:"lock"`
 	Candidate    string `json:"candidate"`
+	Vulnerable   bool   `json:"vulnerable"`
 }
+
+// Lock enforcement, as recorded in a transcript.
+const (
+	LockEnforced   = "exact source, version, size and digest"
+	LockUnenforced = "none"
+)
 
 // Transcript is one run, in full.
 type Transcript struct {
-	Format         string            `json:"format"`
-	Scenario       Scenario          `json:"scenario"`
-	Project        string            `json:"project"`
-	CorrelationID  string            `json:"correlation_id"`
-	Dependencies   []Dependency      `json:"dependencies"`
-	Failure        *Failure          `json:"failure"`
-	Release        Release           `json:"release"`
-	Ledger         Ledger            `json:"ledger"`
-	Audit          []AuditRecord     `json:"audit"`
-	Receipts       []RegistryReceipt `json:"registry_receipts"`
-	ClientResponse ClientResponse    `json:"client_response"`
-	Reconciliation Reconciliation    `json:"reconciliation"`
+	Format   string   `json:"format"`
+	Scenario Scenario `json:"scenario"`
+	// Resolver names the resolution model, LockEnforcement says whether
+	// artifact identity was checked at all, and Warning is set on everything
+	// the intentionally vulnerable half produces.
+	Resolver        string            `json:"resolver"`
+	LockEnforcement string            `json:"lock_enforcement"`
+	Warning         string            `json:"warning,omitempty"`
+	Project         string            `json:"project"`
+	CorrelationID   string            `json:"correlation_id"`
+	Dependencies    []Dependency      `json:"dependencies"`
+	Failure         *Failure          `json:"failure"`
+	Release         Release           `json:"release"`
+	Ledger          Ledger            `json:"ledger"`
+	Audit           []AuditRecord     `json:"audit"`
+	Receipts        []RegistryReceipt `json:"registry_receipts"`
+	ClientResponse  ClientResponse    `json:"client_response"`
+	Reconciliation  Reconciliation    `json:"reconciliation"`
 }
 
 // Bytes renders the transcript in its canonical machine-readable form.
@@ -204,6 +222,11 @@ func Run(ctx context.Context, opts Options) (*Transcript, error) {
 	scenario, err := fixtures.LoadScenario(opts.ScenarioID)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownScenario, opts.ScenarioID)
+	}
+	if scenario.Vulnerable {
+		if err := vulnerable.Gate(); err != nil {
+			return nil, err
+		}
 	}
 	if opts.StateDir == "" {
 		return nil, errors.New("the harness requires a state directory")
@@ -280,8 +303,18 @@ func collectReceipts(ctx context.Context, endpoints map[string]string, runID str
 	}
 	sort.Strings(ids)
 
+	acknowledged := vulnerable.Acknowledged()
 	out := make([]RegistryReceipt, 0, len(ids))
 	for _, id := range ids {
+		set, err := fixtures.RegistrySet(id)
+		if err != nil {
+			return nil, err
+		}
+		// A registry from the vulnerable half is not running in an
+		// unacknowledged workflow, so there is nothing to ask.
+		if set.Vulnerable && !acknowledged {
+			continue
+		}
 		client, err := registry.NewClient(endpoint(endpoints, urls[id]))
 		if err != nil {
 			return nil, err
@@ -315,10 +348,14 @@ func build(scenario fixtures.Scenario, outcome *releasegate.Outcome, receipts []
 			Manifest:     scenario.Manifest,
 			Lock:         scenario.Lock,
 			Candidate:    scenario.Candidate,
+			Vulnerable:   scenario.Vulnerable,
 		},
-		Project:       outcome.Project,
-		CorrelationID: audit.CorrelationID(scenario.ID),
-		Dependencies:  []Dependency{},
+		Resolver:        outcome.Resolver,
+		LockEnforcement: lockEnforcement(outcome),
+		Warning:         warning(scenario),
+		Project:         outcome.Project,
+		CorrelationID:   audit.CorrelationID(scenario.ID),
+		Dependencies:    []Dependency{},
 		Release: Release{
 			Candidate:          scenario.Candidate,
 			GateClassification: outcome.Classification,
@@ -376,12 +413,13 @@ func dependencyRecord(res *resolver.Resolution, failure *resolver.Failure) Depen
 			Pattern:  res.Policy.Pattern,
 			Mode:     res.Policy.Mode,
 			Bound:    res.Policy.Bound.ID,
+			Pool:     poolOf(res.Policy),
 			Excluded: res.Excluded,
 		},
 		IndexDisplayOrder: res.DisplayOrder,
 		QueriedSources:    res.Queried,
 		Candidates:        []Candidate{},
-		SelectionRule:     resolver.SelectionRule,
+		SelectionRule:     res.SelectionRule,
 		Selected: Selected{
 			Source:  res.Selected.Source,
 			Version: res.Selected.Version,
@@ -390,8 +428,11 @@ func dependencyRecord(res *resolver.Resolution, failure *resolver.Failure) Depen
 		},
 		Integrity: res.Integrity,
 	}
+	// The role belongs to the origin that was actually selected, which under a
+	// combined mapping is not the same thing as the bound source — there is no
+	// bound source.
 	if res.Selected.Source != "" {
-		dep.Selected.Role = res.Policy.Bound.Role
+		dep.Selected.Role = roleOf(res.Policy, res.Selected.Source)
 	}
 	if dep.Integrity == "" {
 		dep.Integrity = IntegrityNotReached
@@ -419,6 +460,40 @@ func dependencyRecord(res *resolver.Resolution, failure *resolver.Failure) Depen
 		})
 	}
 	return dep
+}
+
+func poolOf(decision sourcepolicy.Decision) []string {
+	out := make([]string, 0, len(decision.Pool))
+	for _, s := range decision.Pool {
+		out = append(out, s.ID)
+	}
+	return out
+}
+
+func roleOf(decision sourcepolicy.Decision, sourceID string) string {
+	for _, s := range decision.Pool {
+		if s.ID == sourceID {
+			return s.Role
+		}
+	}
+	if decision.Bound.ID == sourceID {
+		return decision.Bound.Role
+	}
+	return ""
+}
+
+func lockEnforcement(outcome *releasegate.Outcome) string {
+	if outcome.LockEnforced {
+		return LockEnforced
+	}
+	return LockUnenforced
+}
+
+func warning(scenario fixtures.Scenario) string {
+	if scenario.Vulnerable {
+		return vulnerable.Label
+	}
+	return ""
 }
 
 func ledgerEntries(outcome *releasegate.Outcome) int {

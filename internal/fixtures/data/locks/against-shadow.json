@@ -1,0 +1,23 @@
+{
+  "format": "indexjack-lock/1",
+  "records": [
+    {
+      "alias": "release-policy",
+      "name": "@glasswing/release-policy",
+      "version": "1.4.2",
+      "source": "glasswing-private",
+      "size": 3072,
+      "sha256": "sha256:590ff7b9ff814cf6d7d30b2afb0d66039f4d12b7f3e69085991b8b12fcf67b75",
+      "artifact_format": "indexjack-package/1"
+    },
+    {
+      "alias": "report-format",
+      "name": "community-format",
+      "version": "2.1.0",
+      "source": "community-public-shadow",
+      "size": 3072,
+      "sha256": "sha256:5529eb2ca80817b07efff6debb218cf3b01d508d6bf72bc7d8fedde549c935ea",
+      "artifact_format": "indexjack-package/1"
+    }
+  ]
+}

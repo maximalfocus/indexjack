@@ -15,13 +15,17 @@ import (
 	"io"
 	"path/filepath"
 
+	"indexjack/internal/buildmanifest"
+
 	"indexjack/internal/audit"
 	"indexjack/internal/canonicaljson"
+	"indexjack/internal/combinedindex"
 	"indexjack/internal/fixtures"
 	"indexjack/internal/ledger"
 	"indexjack/internal/pkgarchive"
 	"indexjack/internal/resolver"
 	"indexjack/internal/sourcepolicy"
+	"indexjack/internal/vulnerable"
 )
 
 // Dependency aliases the gate expects a scenario manifest to declare.
@@ -70,7 +74,12 @@ type Options struct {
 
 // Outcome is everything one run observed.
 type Outcome struct {
-	Scenario      fixtures.Scenario
+	Scenario fixtures.Scenario
+	// Resolver names which resolution model ran, and LockEnforced records
+	// whether artifact identity was checked at all. Both belong in the record:
+	// the two runs differ in these and almost nothing else.
+	Resolver      string
+	LockEnforced  bool
 	ClientResult  string
 	Project       string
 	Resolutions   []*resolver.Resolution
@@ -116,6 +125,13 @@ func Execute(ctx context.Context, opts Options) (*Outcome, error) {
 	if opts.StateDir == "" {
 		return nil, errors.New("release gate requires a state directory")
 	}
+	// A scenario from the intentionally vulnerable half needs both opt-in
+	// controls before anything at all happens.
+	if opts.Scenario.Vulnerable {
+		if err := vulnerable.Gate(); err != nil {
+			return nil, err
+		}
+	}
 	ledgerPath := filepath.Join(opts.StateDir, LedgerFile)
 	auditPath := filepath.Join(opts.StateDir, AuditFile)
 	sink := audit.NewSink(auditPath, opts.Scenario.ID, opts.AuditMirror)
@@ -131,6 +147,8 @@ func Execute(ctx context.Context, opts Options) (*Outcome, error) {
 
 	out := &Outcome{
 		Scenario:     opts.Scenario,
+		Resolver:     opts.Scenario.Resolver,
+		LockEnforced: opts.Scenario.Resolver == fixtures.ResolverSecure,
 		LedgerPath:   ledgerPath,
 		LedgerBefore: before,
 		LedgerAfter:  before,
@@ -159,13 +177,34 @@ func Execute(ctx context.Context, opts Options) (*Outcome, error) {
 	out.Project = manifest.Project
 	out.Classification = classifications[opts.Scenario.Candidate]
 
-	cfg := resolver.Config{Policy: policy, Lock: lock, Dial: opts.Dial}
+	// The two resolvers are separate entry points chosen by the scenario, not a
+	// mode one resolver can be switched into: nothing here can weaken the
+	// secure path, and the vulnerable one is unreachable without both opt-in
+	// controls.
+	var resolve func(context.Context, buildmanifest.Dependency) (*resolver.Resolution, error)
+	switch opts.Scenario.Resolver {
+	case fixtures.ResolverSecure:
+		cfg := resolver.Config{Policy: policy, Lock: lock, Dial: opts.Dial}
+		resolve = func(ctx context.Context, dep buildmanifest.Dependency) (*resolver.Resolution, error) {
+			return resolver.Resolve(ctx, cfg, dep)
+		}
+	case fixtures.ResolverCombinedIndex:
+		if err := vulnerable.Gate(); err != nil {
+			return nil, err
+		}
+		cfg := combinedindex.Config{Policy: policy, Dial: opts.Dial}
+		resolve = func(ctx context.Context, dep buildmanifest.Dependency) (*resolver.Resolution, error) {
+			return combinedindex.Resolve(ctx, cfg, dep)
+		}
+	default:
+		return nil, fmt.Errorf("scenario %q names unknown resolver %q", opts.Scenario.ID, opts.Scenario.Resolver)
+	}
 
 	// Dependencies resolve in declaration order and the build stops at the
 	// first failure. Nothing after the failure is fetched, which is why a
 	// failed private resolution reaches no other source at all.
 	for _, dep := range manifest.Dependencies {
-		resolution, err := resolver.Resolve(ctx, cfg, dep)
+		resolution, err := resolve(ctx, dep)
 		if err != nil {
 			failure, ok := resolver.AsFailure(err)
 			if !ok {

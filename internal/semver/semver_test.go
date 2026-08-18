@@ -57,6 +57,11 @@ func TestRangeSatisfaction(t *testing.T) {
 		{"^1.4.2", "1.4.1", false},
 		{"^1.4.2", "2.0.0", false},
 		{"^1.4.2", "9.9.9", false},
+		{">=1.4.2", "1.4.2", true},
+		{">=1.4.2", "1.5.0", true},
+		{">=1.4.2", "9.9.9", true},
+		{">=1.4.2", "1.4.1", false},
+		{">=1.4.2", "0.9.9", false},
 	}
 	for _, c := range cases {
 		r, err := ParseRange(c.spec)
@@ -70,7 +75,7 @@ func TestRangeSatisfaction(t *testing.T) {
 }
 
 func TestParseRangeRejectsUnsupportedForms(t *testing.T) {
-	for _, in := range []string{"", ">=1.4.2", "~1.4.2", "*", "^", "^1.4", "1.x", "^^1.4.2"} {
+	for _, in := range []string{"", "~1.4.2", "*", "^", "^1.4", "1.x", "^^1.4.2", ">1.4.2", ">=", ">=1.4", "<=1.4.2", ">= 1.4.2"} {
 		if _, err := ParseRange(in); err == nil {
 			t.Errorf("ParseRange(%q) accepted an unsupported range", in)
 		}
@@ -78,7 +83,7 @@ func TestParseRangeRejectsUnsupportedForms(t *testing.T) {
 }
 
 func TestRangeString(t *testing.T) {
-	for _, in := range []string{"1.4.2", "^1.4.2"} {
+	for _, in := range []string{"1.4.2", "^1.4.2", ">=1.4.2"} {
 		r, err := ParseRange(in)
 		if err != nil {
 			t.Fatalf("ParseRange(%q): %v", in, err)

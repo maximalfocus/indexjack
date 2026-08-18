@@ -28,6 +28,7 @@ import (
 	"indexjack/internal/canonicaljson"
 	"indexjack/internal/pkgarchive"
 	"indexjack/internal/semver"
+	"indexjack/internal/vulnerable"
 )
 
 // Wire formats and headers.
@@ -101,7 +102,10 @@ type FixtureSet struct {
 	ID       string
 	Role     string
 	Revision string
-	Packages []Package
+	// Vulnerable marks a fixture set that is part of the intentionally
+	// vulnerable half. Every response it serves says so.
+	Vulnerable bool
+	Packages   []Package
 }
 
 // Request is one observation at the registry boundary. Counting requests here,
@@ -195,6 +199,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(HeaderRole, h.set.Role)
 	w.Header().Set(HeaderRevision, h.set.Revision)
 	w.Header().Set(HeaderSource, h.set.ID)
+	if h.set.Vulnerable {
+		w.Header().Set(vulnerable.LabelHeader, vulnerable.Label)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 

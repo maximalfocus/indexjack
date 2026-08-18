@@ -10,11 +10,10 @@ network with no route out, the packages are inert data files, and the "release g
 workflow for an invented organization. No real registry, package, organization, or model is contacted,
 named, probed, or described, and nothing is ever published.
 
-> **This stage of the project delivers the secure half only.** There is no vulnerable resolver and no
-> public shadow package anywhere in this repository yet. What you can run today is the correct
-> behaviour — source binding, lock verification, fail-closed errors — with a full provenance
-> transcript and registry-observed evidence for every run, which is what the later comparison will be
-> measured against.
+> **The intentionally vulnerable half is behind two deliberate opt-in controls.** Nothing you run by
+> following the commands below reaches it: the vulnerable resolver, the public shadow package, and the
+> registry that serves it require both a non-default container profile and an explicit
+> acknowledgement, and either one alone fails. See [Opt in to the flaw](#opt-in-to-the-flaw).
 
 ## What it shows
 
@@ -62,6 +61,8 @@ The gate takes seconds and asserts, in one pass:
 - **transcripts** — each scenario's transcript is byte-identical between runs, each registry's signed
   receipt matches the exact expected request count, and no transcript carries a credential, address,
   or package content;
+- **the opt-in controls** — each control alone refuses, both together admit, and in a default run the
+  vulnerable scenarios are not merely refused but absent, with their registry not even running;
 - **formatting, vetting and the full test suite**, in a pinned toolchain image through the same
   Compose boundary that CI uses.
 
@@ -103,6 +104,8 @@ docker compose run --rm cli release --scenario secure-safe-candidate   # the dir
 | `secure-tampered-artifact` | The bound private source returns different bytes. The mismatch is caught before any package content is read. |
 | `upgrade-unreviewed` | The project asks for a newer version while the lock still pins the old one. No flag relaxes a lock. |
 | `reviewed-upgrade` | The same upgrade succeeds once the checked-in lock carries the new version, size, and digest. |
+| `vulnerable-public-shadow` | *Opt-in only.* One name resolved across two trust domains: a public package with the same name and a higher version wins, and approves the known-unsafe candidate. |
+| `secure-against-public-shadow` | *Opt-in only.* The identical shadow exists and is running, and exclusive binding still selects the private artifact and still rejects the candidate. |
 
 Scenario ids are the only input the demonstration accepts. There is no way to pass a package name,
 version, registry, URL, artifact, model, or policy from outside. The harness reports on a run, so it
@@ -112,12 +115,46 @@ exit non-zero on purpose.
 `docker compose run --rm cli scenarios` lists the ids; `docker compose run --rm cli fixtures` prints
 every artifact's identity.
 
+## Opt in to the flaw
+
+The vulnerable half needs two separate deliberate acts — a non-default container profile and an
+explicit acknowledgement:
+
+```sh
+ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable run --rm verify-vulnerable
+```
+
+Either one alone fails, and says which acknowledgement is missing. The profile without the
+acknowledgement will not even start the registry that serves the shadow.
+
+That run is the same gate as `verify` plus the vulnerable-path assertions, and afterwards the matrix
+shows both halves side by side:
+
+```sh
+ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable run --rm vulnerable harness --matrix
+```
+
+```
+scenario                      source policy                                             queried (observed)                               selected origin          version  digest        integrity   verdict  mutation  reconciliation
+vulnerable-public-shadow      @glasswing/*→glasswing-private + community-public-shadow  community-public-shadow(4) glasswing-private(1)  community-public-shadow  9.9.9    43a700bfe56e  unverified  APPROVE  approved  FAIL
+secure-against-public-shadow  @glasswing/*→glasswing-private                            community-public-shadow(2) glasswing-private(2)  glasswing-private        1.4.2    590ff7b9ff81  verified    REJECT   none      PASS
+```
+
+Same build, same candidate, same public registry — running, reachable, and carrying the shadow. The
+only differences are that one run pools two sources for a single name instead of binding it to one,
+and does not check what bytes it got. That is the entire flaw.
+
+Neither control is a security boundary and neither pretends to be one; anything with a shell can set
+an environment variable. They are an acknowledgement, so that nobody arrives at the vulnerable half by
+running the documented command or copying a snippet.
+
 ## Safety boundary
 
 - **Local only.** The runtime network is internal: no default gateway, no route to an external host,
   and no published port. The `.example` hostnames are reserved documentation labels that resolve only
   through this network's own aliases.
-- **Nothing is executed.** A package artifact contains a manifest and one enumerated key/value table.
+- **Nothing is executed, on either path.** A package artifact contains a manifest and one enumerated
+  key/value table.
   The loader parses those as data and never evaluates, imports, compiles, deserializes into
   behaviour, spawns, or otherwise runs package content. There are no install hooks and no lifecycle
   scripts anywhere in the project. Real dependencies usually *do* contain executable code and can
@@ -140,6 +177,8 @@ every artifact's identity.
 | `internal/registry` | the immutable fixture registry service and its client |
 | `internal/releasegate` | the release decision and the atomic ledger |
 | `internal/harness` | the named-scenario harness, its transcript, and reconciliation |
+| `internal/combinedindex` | the opt-in vulnerable resolver, and nothing else |
+| `internal/vulnerable` | the two opt-in controls |
 | `internal/verify` | the gate every assertion above comes from |
 | `internal/fixtures` | every checked-in fixture, and the deterministic build of each artifact |
 

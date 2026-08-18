@@ -2,15 +2,19 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"indexjack/internal/combinedindex"
 	"indexjack/internal/fixtures"
 	"indexjack/internal/pkgarchive"
 	"indexjack/internal/registry"
 	"indexjack/internal/releasegate"
 	"indexjack/internal/resolver"
+	"indexjack/internal/sourcepolicy"
+	"indexjack/internal/vulnerable"
 )
 
 func startStack(t *testing.T) map[string]string {
@@ -55,9 +59,9 @@ func run(t *testing.T, endpoints map[string]string, scenario string) *Transcript
 
 func TestTranscriptIsByteIdenticalBetweenRuns(t *testing.T) {
 	endpoints := startStack(t)
-	ids, err := fixtures.ScenarioIDs()
+	ids, err := fixtures.DefaultScenarioIDs()
 	if err != nil {
-		t.Fatalf("ScenarioIDs: %v", err)
+		t.Fatalf("DefaultScenarioIDs: %v", err)
 	}
 	for _, id := range ids {
 		first, err := run(t, endpoints, id).Bytes()
@@ -126,15 +130,27 @@ func TestTranscriptRecordsTheWholeCausalChain(t *testing.T) {
 // registry, and a registry that heard nothing still has to say so.
 func TestReceiptsAreSignedAndCoverEveryRegistry(t *testing.T) {
 	endpoints := startStack(t)
+	// Every registry that exists in this workflow has to answer. The ones from
+	// the vulnerable half are not running here, so there is nothing to ask.
 	ids, err := fixtures.RegistrySetIDs()
 	if err != nil {
 		t.Fatalf("RegistrySetIDs: %v", err)
 	}
+	running := 0
+	for _, id := range ids {
+		set, err := fixtures.RegistrySet(id)
+		if err != nil {
+			t.Fatalf("RegistrySet(%q): %v", id, err)
+		}
+		if !set.Vulnerable {
+			running++
+		}
+	}
 
 	for _, scenario := range []string{"secure-missing-artifact", "secure-tampered-artifact", "upgrade-unreviewed"} {
 		transcript := run(t, endpoints, scenario)
-		if len(transcript.Receipts) != len(ids) {
-			t.Fatalf("%s: %d receipts for %d registries", scenario, len(transcript.Receipts), len(ids))
+		if len(transcript.Receipts) != running {
+			t.Fatalf("%s: %d receipts for %d running registries", scenario, len(transcript.Receipts), running)
 		}
 		for _, receipt := range transcript.Receipts {
 			if !receipt.SignatureVerified {
@@ -149,9 +165,9 @@ func TestReceiptsAreSignedAndCoverEveryRegistry(t *testing.T) {
 
 func TestSecureRunsNeverAskThePublicRegistryAboutThePrivateNamespace(t *testing.T) {
 	endpoints := startStack(t)
-	ids, err := fixtures.ScenarioIDs()
+	ids, err := fixtures.DefaultScenarioIDs()
 	if err != nil {
-		t.Fatalf("ScenarioIDs: %v", err)
+		t.Fatalf("DefaultScenarioIDs: %v", err)
 	}
 	for _, id := range ids {
 		for _, receipt := range run(t, endpoints, id).Receipts {
@@ -208,9 +224,9 @@ func TestMatrixRunsEveryScenarioAndRenders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Matrix: %v", err)
 	}
-	ids, err := fixtures.ScenarioIDs()
+	ids, err := fixtures.DefaultScenarioIDs()
 	if err != nil {
-		t.Fatalf("ScenarioIDs: %v", err)
+		t.Fatalf("DefaultScenarioIDs: %v", err)
 	}
 	if len(transcripts) != len(ids) {
 		t.Fatalf("%d transcripts for %d scenarios", len(transcripts), len(ids))
@@ -378,4 +394,242 @@ func TestFailedRunStillRecordsPolicyAndQuerySet(t *testing.T) {
 			t.Errorf("%s recorded no failure", scenario)
 		}
 	}
+}
+
+// acknowledge satisfies both opt-in controls for the duration of one test. It
+// is the deliberate, explicit act the demonstration asks for; nothing in the
+// default path does this.
+func acknowledge(t *testing.T) {
+	t.Helper()
+	t.Setenv(vulnerable.AcknowledgementEnv, vulnerable.Acknowledgement)
+	t.Setenv(vulnerable.ProfileEnv, vulnerable.Profile)
+}
+
+func TestVulnerableScenariosAreUnreachableWithoutBothControls(t *testing.T) {
+	endpoints := startStack(t)
+	cases := []struct {
+		name            string
+		acknowledgement string
+		profile         string
+	}{
+		{"neither control", "", ""},
+		{"acknowledgement alone", vulnerable.Acknowledgement, ""},
+		{"profile alone", "", vulnerable.Profile},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv(vulnerable.AcknowledgementEnv, c.acknowledgement)
+			t.Setenv(vulnerable.ProfileEnv, c.profile)
+			for _, id := range []string{"vulnerable-public-shadow", "secure-against-public-shadow"} {
+				_, err := Run(context.Background(), Options{ScenarioID: id, StateDir: t.TempDir(), Endpoints: endpoints})
+				if !errors.Is(err, vulnerable.ErrNotAcknowledged) {
+					t.Fatalf("Run(%q) = %v, want ErrNotAcknowledged", id, err)
+				}
+			}
+			// The scenarios are not merely refused; by default they are not
+			// even listed.
+			transcripts, err := Matrix(context.Background(), Options{StateDir: t.TempDir(), Endpoints: endpoints})
+			if err != nil {
+				t.Fatalf("Matrix: %v", err)
+			}
+			for _, transcript := range transcripts {
+				if transcript.Scenario.Vulnerable {
+					t.Fatalf("the default matrix ran %q", transcript.Scenario.ID)
+				}
+			}
+		})
+	}
+}
+
+// The whole demonstration in one test: the same build, the same candidate, the
+// same public registry — and the answer changes because one name was resolved
+// across two trust domains at once.
+func TestPublicShadowWinsUnderTheCombinedIndexResolver(t *testing.T) {
+	acknowledge(t)
+	endpoints := startStack(t)
+	transcript := run(t, endpoints, "vulnerable-public-shadow")
+
+	if transcript.Resolver != fixtures.ResolverCombinedIndex {
+		t.Fatalf("resolver = %q", transcript.Resolver)
+	}
+	if transcript.LockEnforcement != LockUnenforced {
+		t.Fatalf("lock enforcement = %q", transcript.LockEnforcement)
+	}
+	if transcript.Warning != vulnerable.Label {
+		t.Fatalf("warning = %q", transcript.Warning)
+	}
+
+	dep := transcript.Dependencies[0]
+	if dep.SourcePolicy.Mode != sourcepolicy.ModeCombined {
+		t.Fatalf("source policy = %+v", dep.SourcePolicy)
+	}
+	// Both trust domains offered the same name, and both offers are recorded.
+	offers := map[string]string{}
+	for _, c := range dep.Candidates {
+		offers[c.Source] = c.Version
+	}
+	if offers["glasswing-private"] != "1.4.2" || offers["community-public-shadow"] != "9.9.9" {
+		t.Fatalf("candidates = %+v", dep.Candidates)
+	}
+	if dep.Candidates[0].Version != "9.9.9" {
+		t.Fatalf("the highest version is not ordered first: %+v", dep.Candidates)
+	}
+	if dep.Selected.Source != "community-public-shadow" || dep.Selected.Version != "9.9.9" {
+		t.Fatalf("selected %+v", dep.Selected)
+	}
+	if dep.Selected.Role != "public" {
+		t.Fatalf("selected role = %q", dep.Selected.Role)
+	}
+	if dep.Integrity != combinedindex.IntegrityUnverified {
+		t.Fatalf("integrity = %q", dep.Integrity)
+	}
+
+	// The selected bytes are the public fixture's bytes.
+	shadow := artifactDigest(t, "release-policy-9.9.9-public-shadow")
+	if dep.Selected.SHA256 != shadow {
+		t.Fatalf("selected digest %q, public shadow digest %q", dep.Selected.SHA256, shadow)
+	}
+
+	if transcript.Release.PolicyVerdict != pkgarchive.VerdictApprove {
+		t.Fatalf("verdict = %q", transcript.Release.PolicyVerdict)
+	}
+	if transcript.Release.GateClassification != fixtures.ClassificationKnownUnsafe {
+		t.Fatalf("classification = %q", transcript.Release.GateClassification)
+	}
+	if !transcript.Ledger.Changed || transcript.Ledger.Entries != 1 {
+		t.Fatalf("ledger = %+v", transcript.Ledger)
+	}
+	if transcript.Reconciliation.Result != ReconcileFail {
+		t.Fatalf("reconciliation = %+v", transcript.Reconciliation)
+	}
+	if transcript.Reconciliation.Statement != "untrusted origin influenced release approval" {
+		t.Fatalf("reconciliation statement = %q", transcript.Reconciliation.Statement)
+	}
+	if transcript.Reconciliation.Origin != "community-public-shadow" || transcript.Reconciliation.Digest != shadow {
+		t.Fatalf("reconciliation does not name the origin and digest: %+v", transcript.Reconciliation)
+	}
+
+	// Both registries say they were asked, in their own signed words.
+	observed := map[string]int{}
+	askedShadowAbout := map[string]bool{}
+	for _, receipt := range transcript.Receipts {
+		observed[receipt.Source] = receipt.RequestCount
+		if !receipt.SignatureVerified {
+			t.Errorf("receipt from %q is not signed", receipt.Source)
+		}
+		if receipt.Source == "community-public-shadow" {
+			for _, request := range receipt.Requests {
+				askedShadowAbout[request.Name+"@"+request.Version] = true
+			}
+		}
+	}
+	if observed["glasswing-private"] == 0 || observed["community-public-shadow"] == 0 {
+		t.Fatalf("observed requests = %+v", observed)
+	}
+	if !askedShadowAbout["@glasswing/release-policy@9.9.9"] {
+		t.Fatalf("the public fixture was never asked for the selected artifact: %+v", askedShadowAbout)
+	}
+}
+
+// The same shadow, the same registry, the same candidate — and the secure
+// resolver is unmoved. Without this pair the run above proves nothing.
+func TestSecureResolverIsUnmovedByTheSameShadow(t *testing.T) {
+	acknowledge(t)
+	endpoints := startStack(t)
+	transcript := run(t, endpoints, "secure-against-public-shadow")
+
+	if transcript.Resolver != fixtures.ResolverSecure || transcript.LockEnforcement != LockEnforced {
+		t.Fatalf("resolver %q lock %q", transcript.Resolver, transcript.LockEnforcement)
+	}
+	dep := transcript.Dependencies[0]
+	if dep.SourcePolicy.Mode != sourcepolicy.ModeExclusive || dep.SourcePolicy.Bound != "glasswing-private" {
+		t.Fatalf("source policy = %+v", dep.SourcePolicy)
+	}
+	if dep.Selected.Source != "glasswing-private" || dep.Selected.Version != "1.4.2" {
+		t.Fatalf("selected %+v", dep.Selected)
+	}
+	if dep.Integrity != resolver.IntegrityVerified {
+		t.Fatalf("integrity = %q", dep.Integrity)
+	}
+	if transcript.Release.PolicyVerdict != pkgarchive.VerdictReject {
+		t.Fatalf("verdict = %q", transcript.Release.PolicyVerdict)
+	}
+	if transcript.Ledger.Changed {
+		t.Fatalf("ledger = %+v", transcript.Ledger)
+	}
+	if transcript.Reconciliation.Result != ReconcilePass {
+		t.Fatalf("reconciliation = %+v", transcript.Reconciliation)
+	}
+
+	// The shadow-bearing registry exists, is running, carries the shadow — and
+	// was never asked about the private namespace.
+	for _, receipt := range transcript.Receipts {
+		if receipt.Source != "community-public-shadow" {
+			continue
+		}
+		for _, request := range receipt.Requests {
+			if strings.HasPrefix(request.Name, "@glasswing/") {
+				t.Fatalf("the shadow registry was asked for %q", request.Name)
+			}
+		}
+	}
+}
+
+func TestVulnerableTranscriptsAreDeterministicToo(t *testing.T) {
+	acknowledge(t)
+	endpoints := startStack(t)
+	for _, id := range []string{"vulnerable-public-shadow", "secure-against-public-shadow"} {
+		first, err := run(t, endpoints, id).Bytes()
+		if err != nil {
+			t.Fatalf("Bytes: %v", err)
+		}
+		second, err := run(t, endpoints, id).Bytes()
+		if err != nil {
+			t.Fatalf("Bytes: %v", err)
+		}
+		if string(first) != string(second) {
+			t.Fatalf("%s transcript is not deterministic", id)
+		}
+	}
+}
+
+func TestAcknowledgedMatrixIncludesBothHalves(t *testing.T) {
+	acknowledge(t)
+	endpoints := startStack(t)
+	transcripts, err := Matrix(context.Background(), Options{StateDir: t.TempDir(), Endpoints: endpoints})
+	if err != nil {
+		t.Fatalf("Matrix: %v", err)
+	}
+	ids, err := fixtures.ScenarioIDs()
+	if err != nil {
+		t.Fatalf("ScenarioIDs: %v", err)
+	}
+	if len(transcripts) != len(ids) {
+		t.Fatalf("%d transcripts for %d scenarios", len(transcripts), len(ids))
+	}
+
+	var table strings.Builder
+	if err := RenderMatrix(&table, transcripts); err != nil {
+		t.Fatalf("RenderMatrix: %v", err)
+	}
+	for _, want := range []string{"vulnerable-public-shadow", "community-public-shadow", "9.9.9", "FAIL", "unverified"} {
+		if !strings.Contains(table.String(), want) {
+			t.Errorf("matrix is missing %q:\n%s", want, table.String())
+		}
+	}
+}
+
+func artifactDigest(t *testing.T, packageDir string) string {
+	t.Helper()
+	artifacts, err := fixtures.Artifacts()
+	if err != nil {
+		t.Fatalf("Artifacts: %v", err)
+	}
+	for _, a := range artifacts {
+		if a.Package == packageDir {
+			return a.SHA256
+		}
+	}
+	t.Fatalf("no artifact built from %q", packageDir)
+	return ""
 }

@@ -76,6 +76,13 @@ Details that matter:
 | `verified` | the fetched bytes matched the locked size and digest, and only then were read |
 | `rejected` | a candidate was selected, its bytes were fetched and compared, and they lost |
 | `not_reached` | the run never got as far as comparing bytes |
+| `unverified` | a digest was computed and compared against nothing — only the opt-in vulnerable resolver reports this |
+
+Alongside it, every transcript records which resolution model ran (`resolver`) and what artifact
+identity was enforced (`lock_enforcement`). Those two fields plus the selected origin are the whole
+difference between the two halves of the demonstration, so they are stated rather than implied. A
+transcript from the intentionally vulnerable half also carries a `warning` naming itself as such, and
+the registry that served it labels every one of its responses the same way.
 
 A failed run still records its request, its source policy, the sources it queried, and the candidates
 it saw. A trace that went blank at the moment something went wrong would be no use at all.

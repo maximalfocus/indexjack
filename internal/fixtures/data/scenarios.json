@@ -4,6 +4,7 @@
     {
       "id": "secure-unsafe-candidate",
       "summary": "The locked private release policy is selected and rejects the known-unsafe candidate. The release ledger does not change.",
+      "resolver": "secure",
       "source_policy": "default",
       "manifest": "default",
       "lock": "default",
@@ -12,6 +13,7 @@
     {
       "id": "secure-safe-candidate",
       "summary": "The same locked private release policy approves the release-ready candidate, which is written to the ledger exactly once.",
+      "resolver": "secure",
       "source_policy": "default",
       "manifest": "default",
       "lock": "default",
@@ -20,6 +22,7 @@
     {
       "id": "secure-missing-artifact",
       "summary": "The bound private source does not carry the locked artifact. Resolution fails closed instead of looking anywhere else.",
+      "resolver": "secure",
       "source_policy": "missing-artifact",
       "manifest": "default",
       "lock": "default",
@@ -28,6 +31,7 @@
     {
       "id": "secure-tampered-artifact",
       "summary": "The bound private source returns bytes that do not match the locked digest. Resolution fails closed before any package content is read.",
+      "resolver": "secure",
       "source_policy": "tampered-artifact",
       "manifest": "default",
       "lock": "default",
@@ -36,6 +40,7 @@
     {
       "id": "upgrade-unreviewed",
       "summary": "The project asks for a newer private version while the lock still pins the old one. The build fails closed: no flag relaxes a lock.",
+      "resolver": "secure",
       "source_policy": "default",
       "manifest": "upgrade",
       "lock": "default",
@@ -44,10 +49,31 @@
     {
       "id": "reviewed-upgrade",
       "summary": "The same upgrade succeeds once the checked-in lock carries the new version, size, and digest. Controlled change, not a permanent freeze.",
+      "resolver": "secure",
       "source_policy": "default",
       "manifest": "upgrade",
       "lock": "reviewed-upgrade",
       "candidate": "MODEL-CANDIDATE-04"
+    },
+    {
+      "id": "vulnerable-public-shadow",
+      "summary": "Opt-in only. One name is resolved across two trust domains at once, so a public package with the same name and a higher version wins and approves the known-unsafe candidate.",
+      "resolver": "combined-index",
+      "source_policy": "combined-index",
+      "manifest": "permissive",
+      "lock": "against-shadow",
+      "candidate": "MODEL-CANDIDATE-17",
+      "vulnerable": true
+    },
+    {
+      "id": "secure-against-public-shadow",
+      "summary": "Opt-in only. The identical public shadow exists, and the secure resolver still binds the namespace to the private source, selects the locked artifact, and rejects the candidate.",
+      "resolver": "secure",
+      "source_policy": "exclusive-against-shadow",
+      "manifest": "permissive",
+      "lock": "against-shadow",
+      "candidate": "MODEL-CANDIDATE-17",
+      "vulnerable": true
     }
   ]
 }

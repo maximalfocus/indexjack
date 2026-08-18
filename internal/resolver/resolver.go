@@ -38,21 +38,22 @@ const (
 // Stable failure classes. These are internal evidence: every one of them is
 // reported to the client as the same generic build failure.
 const (
-	ClassSourcePolicyUnresolved = "SOURCE_POLICY_UNRESOLVED"
-	ClassSourcePolicyAmbiguous  = "SOURCE_POLICY_AMBIGUOUS"
-	ClassSourcePolicyInvalid    = "SOURCE_POLICY_INVALID"
-	ClassLockMissing            = "LOCK_MISSING"
-	ClassLockDuplicate          = "LOCK_DUPLICATE"
-	ClassLockInvalid            = "LOCK_INVALID"
-	ClassLockSourceMismatch     = "LOCK_SOURCE_MISMATCH"
-	ClassLockNameMismatch       = "LOCK_NAME_MISMATCH"
-	ClassLockRangeConflict      = "LOCK_RANGE_CONFLICT"
-	ClassRegistryUnavailable    = "REGISTRY_UNAVAILABLE"
-	ClassArtifactUnavailable    = "ARTIFACT_UNAVAILABLE"
-	ClassArtifactSizeMismatch   = "ARTIFACT_SIZE_MISMATCH"
-	ClassArtifactDigestMismatch = "ARTIFACT_DIGEST_MISMATCH"
-	ClassArtifactMalformed      = "ARTIFACT_MALFORMED"
-	ClassManifestMismatch       = "MANIFEST_MISMATCH"
+	ClassSourcePolicyUnresolved   = "SOURCE_POLICY_UNRESOLVED"
+	ClassSourcePolicyAmbiguous    = "SOURCE_POLICY_AMBIGUOUS"
+	ClassSourcePolicyInvalid      = "SOURCE_POLICY_INVALID"
+	ClassSourcePolicyNotExclusive = "SOURCE_POLICY_NOT_EXCLUSIVE"
+	ClassLockMissing              = "LOCK_MISSING"
+	ClassLockDuplicate            = "LOCK_DUPLICATE"
+	ClassLockInvalid              = "LOCK_INVALID"
+	ClassLockSourceMismatch       = "LOCK_SOURCE_MISMATCH"
+	ClassLockNameMismatch         = "LOCK_NAME_MISMATCH"
+	ClassLockRangeConflict        = "LOCK_RANGE_CONFLICT"
+	ClassRegistryUnavailable      = "REGISTRY_UNAVAILABLE"
+	ClassArtifactUnavailable      = "ARTIFACT_UNAVAILABLE"
+	ClassArtifactSizeMismatch     = "ARTIFACT_SIZE_MISMATCH"
+	ClassArtifactDigestMismatch   = "ARTIFACT_DIGEST_MISMATCH"
+	ClassArtifactMalformed        = "ARTIFACT_MALFORMED"
+	ClassManifestMismatch         = "MANIFEST_MISMATCH"
 )
 
 // SelectionRule is the one rule this resolver applies. It is printed in every
@@ -77,6 +78,10 @@ func fail(class, stage string, err error) *Failure {
 	return &Failure{Class: class, Stage: stage, Err: err}
 }
 
+// NewFailure builds a resolution failure. The opt-in combined-index resolver
+// reports through the same shape, so one transcript schema describes both.
+func NewFailure(class, stage string, err error) *Failure { return fail(class, stage, err) }
+
 // AsFailure extracts the resolution failure from err, if any.
 func AsFailure(err error) (*Failure, bool) {
 	var f *Failure
@@ -97,20 +102,21 @@ type Candidate struct {
 
 // Resolution is the complete record of one successful dependency resolution.
 type Resolution struct {
-	Alias        string
-	Name         string
-	Range        string
-	DisplayOrder []string
-	Policy       sourcepolicy.Decision
-	Queried      []string
-	Excluded     []string
-	Candidates   []Candidate
-	Selected     Candidate
-	Locked       lockfile.Record
-	Size         int64
-	Digest       string
-	Integrity    string
-	Package      *pkgarchive.Package
+	Alias         string
+	Name          string
+	Range         string
+	DisplayOrder  []string
+	Policy        sourcepolicy.Decision
+	Queried       []string
+	Excluded      []string
+	Candidates    []Candidate
+	SelectionRule string
+	Selected      Candidate
+	Locked        lockfile.Record
+	Size          int64
+	Digest        string
+	Integrity     string
+	Package       *pkgarchive.Package
 }
 
 // Integrity verdict values.
@@ -149,7 +155,7 @@ func Resolve(ctx context.Context, cfg Config, dep buildmanifest.Dependency) (*Re
 	// A resolution record exists from the first step, so a failure can still
 	// say what was asked, what policy decided, and who was contacted. A trace
 	// that goes blank at the moment something goes wrong is not a trace.
-	res := &Resolution{Alias: dep.Alias, Name: dep.Name, Range: dep.Range}
+	res := &Resolution{Alias: dep.Alias, Name: dep.Name, Range: dep.Range, SelectionRule: SelectionRule}
 
 	// 1. Source policy, before anything is contacted.
 	if err := cfg.Policy.Validate(); err != nil {
@@ -163,6 +169,13 @@ func Resolve(ctx context.Context, cfg Config, dep buildmanifest.Dependency) (*Re
 			class = ClassSourcePolicyAmbiguous
 		}
 		return res, fail(class, StageSourcePolicy, err)
+	}
+	// A name this resolver will act on must be bound to exactly one source.
+	// Anything else — a pool, a preference, a fallback — is refused here rather
+	// than quietly resolved, because "which source" is the decision under test.
+	if decision.Mode != sourcepolicy.ModeExclusive {
+		return res, fail(ClassSourcePolicyNotExclusive, StageSourcePolicy,
+			fmt.Errorf("policy binds %q in %q mode; the secure resolver requires an exclusive binding", dep.Name, decision.Mode))
 	}
 	res.Policy = decision
 	for _, s := range decision.Excluded {

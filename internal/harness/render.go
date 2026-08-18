@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"indexjack/internal/fixtures"
+	"indexjack/internal/vulnerable"
 )
 
 const labelWidth = 24
@@ -55,8 +56,13 @@ func Render(w io.Writer, t *Transcript) error {
 	p := &printer{w: w}
 	p.line("%s", strings.Repeat("=", 78))
 	p.line("SCENARIO %s", strings.ToUpper(t.Scenario.ID))
+	if t.Warning != "" {
+		p.line("!! %s", strings.ToUpper(t.Warning))
+	}
 	p.line("%s", strings.Repeat("=", 78))
 	p.field("summary", "%s", t.Scenario.Summary)
+	p.field("resolver", "%s", t.Resolver)
+	p.field("lock enforcement", "%s", t.LockEnforcement)
 	p.field("project", "%s", t.Project)
 	p.field("fixtures", "policy=%s manifest=%s lock=%s", t.Scenario.SourcePolicy, t.Scenario.Manifest, t.Scenario.Lock)
 	p.field("correlation", "%s", t.CorrelationID)
@@ -70,7 +76,7 @@ func Render(w io.Writer, t *Transcript) error {
 	for _, dep := range t.Dependencies {
 		p.line("DEPENDENCY %q", dep.Alias)
 		p.field("request", "%s %s", dep.Request.Name, dep.Request.Range)
-		p.field("source policy", "%s → %s (%s)", dep.SourcePolicy.Pattern, dep.SourcePolicy.Bound, dep.SourcePolicy.Mode)
+		p.field("source policy", "%s → %s (%s)", dep.SourcePolicy.Pattern, policyTarget(dep.SourcePolicy), dep.SourcePolicy.Mode)
 		p.field("index display order", "%s", strings.Join(dep.IndexDisplayOrder, ", "))
 		p.field("queried sources", "%s", valueOr(strings.Join(dep.QueriedSources, ", "), "none"))
 		p.field("excluded sources", "%s", valueOr(strings.Join(dep.SourcePolicy.Excluded, ", "), "none"))
@@ -165,9 +171,14 @@ func bracket(value string) string {
 	return " (" + value + ")"
 }
 
-// Matrix runs every enumerated scenario from fresh state, in checked-in order.
+// Matrix runs every reachable scenario from fresh state, in checked-in order.
+// The intentionally vulnerable scenarios are included only when both opt-in
+// controls are satisfied; otherwise they are simply not there.
 func Matrix(ctx context.Context, opts Options) ([]*Transcript, error) {
-	ids, err := fixtures.ScenarioIDs()
+	ids, err := fixtures.DefaultScenarioIDs()
+	if vulnerable.Acknowledged() {
+		ids, err = fixtures.ScenarioIDs()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -253,9 +264,21 @@ func releasePolicyDependency(t *Transcript) *Dependency {
 	return nil
 }
 
+// policyTarget renders what a mapping points at: one bound source, or the pool
+// a combined mapping considers instead of binding anything.
+func policyTarget(policy SourcePolicy) string {
+	if policy.Bound != "" {
+		return policy.Bound
+	}
+	if len(policy.Pool) > 0 {
+		return strings.Join(policy.Pool, " + ")
+	}
+	return "nothing"
+}
+
 func policyColumn(t *Transcript) string {
 	if dep := releasePolicyDependency(t); dep != nil {
-		return dep.SourcePolicy.Pattern + "→" + dep.SourcePolicy.Bound
+		return dep.SourcePolicy.Pattern + "→" + policyTarget(dep.SourcePolicy)
 	}
 	return "—"
 }

@@ -97,16 +97,26 @@ type classificationDoc struct {
 	Entries []Classification `json:"entries"`
 }
 
+// Resolver models a scenario may run under.
+const (
+	ResolverSecure        = "secure"
+	ResolverCombinedIndex = "combined-index"
+)
+
 // Scenario is one enumerated, checked-in run. Scenario ids are the only input
 // the demonstration accepts: there is no way to name a package, version,
 // registry, URL, artifact, model, or policy from outside.
 type Scenario struct {
 	ID           string `json:"id"`
 	Summary      string `json:"summary"`
+	Resolver     string `json:"resolver"`
 	SourcePolicy string `json:"source_policy"`
 	Manifest     string `json:"manifest"`
 	Lock         string `json:"lock"`
 	Candidate    string `json:"candidate"`
+	// Vulnerable marks a scenario that is part of the intentionally vulnerable
+	// half. Running one takes both opt-in controls.
+	Vulnerable bool `json:"vulnerable,omitempty"`
 }
 
 type scenarioDoc struct {
@@ -125,13 +135,14 @@ type packageRef struct {
 }
 
 type registryDoc struct {
-	Format   string       `json:"format"`
-	ID       string       `json:"id"`
-	Role     string       `json:"role"`
-	Revision string       `json:"revision"`
-	Host     string       `json:"host"`
-	Port     int          `json:"port"`
-	Packages []packageRef `json:"packages"`
+	Format     string       `json:"format"`
+	ID         string       `json:"id"`
+	Role       string       `json:"role"`
+	Revision   string       `json:"revision"`
+	Host       string       `json:"host"`
+	Port       int          `json:"port"`
+	Vulnerable bool         `json:"vulnerable,omitempty"`
+	Packages   []packageRef `json:"packages"`
 }
 
 func read(name string, v any) error {
@@ -259,14 +270,24 @@ func Scenarios() ([]Scenario, error) {
 	return doc.Scenarios, nil
 }
 
-// ScenarioIDs lists the enumerated scenario ids in checked-in order.
-func ScenarioIDs() ([]string, error) {
+// ScenarioIDs lists every enumerated scenario id in checked-in order,
+// including the ones that need both opt-in controls.
+func ScenarioIDs() ([]string, error) { return scenarioIDs(true) }
+
+// DefaultScenarioIDs lists the scenario ids reachable without acknowledging the
+// vulnerable half.
+func DefaultScenarioIDs() ([]string, error) { return scenarioIDs(false) }
+
+func scenarioIDs(includeVulnerable bool) ([]string, error) {
 	scenarios, err := Scenarios()
 	if err != nil {
 		return nil, err
 	}
 	ids := make([]string, 0, len(scenarios))
 	for _, s := range scenarios {
+		if s.Vulnerable && !includeVulnerable {
+			continue
+		}
 		ids = append(ids, s.ID)
 	}
 	return ids, nil
@@ -373,7 +394,7 @@ func RegistrySet(id string) (registry.FixtureSet, error) {
 	if doc.Role != sourcepolicy.RolePrivate && doc.Role != sourcepolicy.RolePublic {
 		return registry.FixtureSet{}, fmt.Errorf("%w: registry role %q", ErrUnknownFixture, doc.Role)
 	}
-	set := registry.FixtureSet{ID: doc.ID, Role: doc.Role, Revision: doc.Revision}
+	set := registry.FixtureSet{ID: doc.ID, Role: doc.Role, Revision: doc.Revision, Vulnerable: doc.Vulnerable}
 	for _, p := range doc.Packages {
 		pkg := registry.Package{Name: p.Name}
 		for _, ref := range p.Versions {
@@ -461,6 +482,16 @@ func ValidateConsistency() error {
 			return fmt.Errorf("%w: duplicate scenario %q", ErrUnknownFixture, s.ID)
 		}
 		seen[s.ID] = struct{}{}
+		switch s.Resolver {
+		case ResolverSecure:
+		case ResolverCombinedIndex:
+			if !s.Vulnerable {
+				return fmt.Errorf("%w: scenario %q uses the combined-index resolver but is not marked vulnerable",
+					ErrUnknownFixture, s.ID)
+			}
+		default:
+			return fmt.Errorf("%w: scenario %q names resolver %q", ErrUnknownFixture, s.ID, s.Resolver)
+		}
 		policy, err := SourcePolicy(s.SourcePolicy)
 		if err != nil {
 			return err
@@ -482,11 +513,17 @@ func ValidateConsistency() error {
 				return fmt.Errorf("%w: scenario %q source %q points at %s, which is not a checked-in registry",
 					ErrUnknownFixture, s.ID, source.ID, source.URL)
 			}
-			if set, err := RegistrySet(registryID); err != nil {
+			set, err := RegistrySet(registryID)
+			if err != nil {
 				return err
-			} else if set.Role != source.Role {
+			}
+			if set.Role != source.Role {
 				return fmt.Errorf("%w: scenario %q source %q claims role %q but registry %q serves role %q",
 					ErrUnknownFixture, s.ID, source.ID, source.Role, registryID, set.Role)
+			}
+			if set.Vulnerable && !s.Vulnerable {
+				return fmt.Errorf("%w: scenario %q is not marked vulnerable but uses registry %q, which is",
+					ErrUnknownFixture, s.ID, registryID)
 			}
 		}
 		for _, dep := range manifest.Dependencies {
@@ -502,7 +539,9 @@ func ValidateConsistency() error {
 			if err != nil {
 				return fmt.Errorf("scenario %q: %w", s.ID, err)
 			}
-			if decision.Bound.ID != record.Source {
+			// A combined mapping binds nothing, so there is nothing for the
+			// lock to agree with: that is exactly what it demonstrates.
+			if decision.Mode == sourcepolicy.ModeExclusive && decision.Bound.ID != record.Source {
 				return fmt.Errorf("%w: scenario %q binds %q to source %q but its lock names %q",
 					ErrUnknownFixture, s.ID, dep.Name, decision.Bound.ID, record.Source)
 			}
