@@ -5,3 +5,6 @@ README.md
 compose.yaml
 .gitignore
 .dockerignore
+LICENSE
+SECURITY.md
+CONTRIBUTING.md

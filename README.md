@@ -191,8 +191,14 @@ running the documented command or copying a snippet.
   behaviour, spawns, or otherwise runs package content. There are no install hooks and no lifecycle
   scripts anywhere in the project. Real dependencies usually *do* contain executable code and can
   therefore have far broader impact; this project deliberately confines its proof to inert data.
-- **Nothing is published.** The registries are read-only fixtures with no upload, write, delete,
-  search, or listing endpoint, and they accept no name that is not checked in.
+- **Nothing is published, and nothing is hosted.** The registries are read-only fixtures with no
+  upload, write, delete, search, or listing endpoint, and they accept no name that is not checked in.
+  This project publishes no package, container image, model, or service endpoint, and there is no
+  deployed or hosted instance of it anywhere. The only supported form is a local clone run through
+  Docker Compose.
+- **Not a production component.** This is a teaching artefact, not a library, tool, or reference
+  implementation to depend on. The vulnerable half is deliberately vulnerable, and even the secure half
+  is a small documented model built to be read — not to resolve real dependencies.
 - **Nothing real is involved.** Every organization, package, version, digest, model candidate, policy,
   and release record is invented for this demonstration.
 - **The only writable state** is a disposable tmpfs release ledger that starts empty on every run.
@@ -225,3 +231,17 @@ A06:2021 with CWE-1104, is not claimed here.
 The resolver is a deliberately small, documented model of how dependency resolution can work. It is
 **not** a reimplementation of npm, pip, Maven, NuGet, Go modules, Cargo, or any other tool, and this
 project makes no claim about how any of them behaves.
+
+## Contributing, security, and licence
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) describes the one supported way to verify a change — the same
+`docker compose run --rm --build verify` gate every landed change has passed — and the boundaries a
+change may not cross.
+
+[`SECURITY.md`](SECURITY.md) draws the line that matters here: the dependency confusion this project
+demonstrates is intentional and is not a vulnerability report, while anything that escapes the boundary
+above — package content executing, a container reaching outside its internal network, a registry fixture
+accepting a write, the vulnerable path reachable without both opt-in acts — is worth reporting, and
+should be reported privately rather than opened as a public issue.
+
+Licensed under the [MIT License](LICENSE).
