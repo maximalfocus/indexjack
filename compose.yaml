@@ -197,11 +197,11 @@ services:
 
   # Manual exploration of the vulnerable half:
   #   ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable run --rm \
-  #     vulnerable harness --scenario vulnerable-public-shadow
+  #     vulnerable compare
   vulnerable:
     <<: *hardened
     profiles: [vulnerable]
-    command: ["harness", "--scenario", "vulnerable-public-shadow"]
+    command: ["compare"]
     environment:
       INDEXJACK_COMPOSE_PROFILE: vulnerable
       ALLOW_VULNERABLE_DEMO: ${ALLOW_VULNERABLE_DEMO:-}
@@ -221,7 +221,7 @@ services:
     networks: [demo]
 
   # Manual exploration, against the same immutable registries:
-  #   docker compose run --rm cli harness --matrix
+  #   docker compose run --rm cli compare
   #   docker compose run --rm cli harness --scenario secure-safe-candidate
   #   docker compose run --rm cli harness --scenario secure-safe-candidate --format json
   #   docker compose run --rm cli release --scenario secure-safe-candidate

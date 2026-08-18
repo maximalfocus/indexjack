@@ -45,8 +45,13 @@ const (
 type TaxonomyEntry struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
-	Role  string `json:"role,omitempty"`
-	Why   string `json:"why"`
+	// Reference is the authoritative MITRE or OWASP page this entry rests on.
+	Reference string `json:"reference"`
+	Role      string `json:"role,omitempty"`
+	Why       string `json:"why"`
+	// Quotes is the wording from that page the claim rests on, where a claim
+	// turns on specific language.
+	Quotes string `json:"quotes,omitempty"`
 }
 
 // Taxonomy is the checked-in boundary of what this project says it is about.
@@ -58,6 +63,7 @@ type Taxonomy struct {
 	Claimed                   []TaxonomyEntry `json:"claimed"`
 	NotClaimed                []TaxonomyEntry `json:"not_claimed"`
 	NoRealPackageManagerClaim string          `json:"no_real_package_manager_claim"`
+	Checked                   string          `json:"checked"`
 }
 
 // IDs returns the identifiers of a taxonomy list, in checked-in order.
@@ -82,7 +88,7 @@ func LoadTaxonomy() (Taxonomy, error) {
 		return Taxonomy{}, fmt.Errorf("%w: taxonomy is incomplete", ErrUnknownFixture)
 	}
 	for _, entry := range append(append([]TaxonomyEntry{}, doc.Claimed...), doc.NotClaimed...) {
-		if entry.ID == "" || entry.Title == "" || entry.Why == "" {
+		if entry.ID == "" || entry.Title == "" || entry.Why == "" || entry.Reference == "" {
 			return Taxonomy{}, fmt.Errorf("%w: taxonomy entry %q is incomplete", ErrUnknownFixture, entry.ID)
 		}
 	}

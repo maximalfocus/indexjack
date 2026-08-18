@@ -15,6 +15,10 @@ named, probed, or described, and nothing is ever published.
 > registry that serves it require both a non-default container profile and an explicit
 > acknowledgement, and either one alone fails. See [Opt in to the flaw](#opt-in-to-the-flaw).
 
+**New here? Read [`docs/WALKTHROUGH.md`](docs/WALKTHROUGH.md).** It is a five-minute tour that teaches
+the flaw, the three half-fixes that do not fix it, the six things it is *not*, and the two-part control
+that does — without asking you to open a single source file.
+
 ## What it shows
 
 A build asks for `@glasswing/release-policy`. That package decides whether a candidate model may be
@@ -75,17 +79,18 @@ The gate takes seconds and asserts, in one pass:
 One row per scenario, every column a fact the run observed:
 
 ```sh
-docker compose run --rm cli harness --matrix
+docker compose run --rm cli compare
 ```
 
 ```
 scenario                  source policy                   queried (observed)                        selected origin    version  digest        integrity    verdict  mutation  ledger                     reconciliation
-secure-unsafe-candidate   @glasswing/*→glasswing-private  community-public(2) glasswing-private(2)  glasswing-private  1.4.2    590ff7b9ff81  verified     REJECT   none      704b56de923e→704b56de923e  PASS
-secure-safe-candidate     @glasswing/*→glasswing-private  community-public(2) glasswing-private(2)  glasswing-private  1.4.2    590ff7b9ff81  verified     APPROVE  approved  704b56de923e→60caa8cb929b  PASS
+------------------------  ------------------------------  ----------------------------------------  -----------------  -------  ------------  -----------  -------  --------  -------------------------  --------------
+secure-unsafe-candidate   @glasswing/*→glasswing-private  glasswing-private(2) community-public(2)  glasswing-private  1.4.2    590ff7b9ff81  verified     REJECT   none      704b56de923e→704b56de923e  PASS
+secure-safe-candidate     @glasswing/*→glasswing-private  glasswing-private(2) community-public(2)  glasswing-private  1.4.2    590ff7b9ff81  verified     APPROVE  approved  704b56de923e→60caa8cb929b  PASS
 secure-missing-artifact   @glasswing/*→glasswing-private  glasswing-private-missing(1)              —                  —        —             not_reached  —        none      704b56de923e→704b56de923e  PASS
 secure-tampered-artifact  @glasswing/*→glasswing-private  glasswing-private-tampered(2)             glasswing-private  1.4.2    —             rejected     —        none      704b56de923e→704b56de923e  PASS
 upgrade-unreviewed        @glasswing/*→glasswing-private  none                                      —                  —        —             not_reached  —        none      704b56de923e→704b56de923e  PASS
-reviewed-upgrade          @glasswing/*→glasswing-private  community-public(2) glasswing-private(2)  glasswing-private  1.5.0    388952376306  verified     APPROVE  approved  704b56de923e→5018fda7bddf  PASS
+reviewed-upgrade          @glasswing/*→glasswing-private  glasswing-private(2) community-public(2)  glasswing-private  1.5.0    388952376306  verified     APPROVE  approved  704b56de923e→5018fda7bddf  PASS
 ```
 
 The **queried** column is not the resolver's account of itself: it is what each registry says it was
@@ -141,13 +146,14 @@ That run is the same gate as `verify` plus the vulnerable-path assertions, and a
 shows both halves side by side:
 
 ```sh
-ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable run --rm vulnerable harness --matrix
+ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable run --rm vulnerable compare
 ```
 
 ```
-scenario                      source policy                                             queried (observed)                               selected origin          version  digest        integrity   verdict  mutation  reconciliation
-vulnerable-public-shadow      @glasswing/*→glasswing-private + community-public-shadow  community-public-shadow(4) glasswing-private(1)  community-public-shadow  9.9.9    43a700bfe56e  unverified  APPROVE  approved  FAIL
-secure-against-public-shadow  @glasswing/*→glasswing-private                            community-public-shadow(2) glasswing-private(2)  glasswing-private        1.4.2    590ff7b9ff81  verified    REJECT   none      PASS
+scenario                      source policy                                             queried (observed)                               selected origin          version  digest        integrity    verdict  mutation  ledger                     reconciliation
+----------------------------  --------------------------------------------------------  -----------------------------------------------  -----------------------  -------  ------------  -----------  -------  --------  -------------------------  --------------
+vulnerable-public-shadow      @glasswing/*→community-public-shadow + glasswing-private  community-public-shadow(4) glasswing-private(1)  community-public-shadow  9.9.9    43a700bfe56e  unverified   APPROVE  approved  704b56de923e→8c7eedd3cdba  FAIL
+secure-against-public-shadow  @glasswing/*→glasswing-private                            glasswing-private(2) community-public-shadow(2)  glasswing-private        1.4.2    590ff7b9ff81  verified     REJECT   none      704b56de923e→704b56de923e  PASS
 ```
 
 Same build, same candidate, same public registry — running, reachable, and carrying the shadow. The
@@ -208,6 +214,7 @@ running the documented command or copying a snippet.
 | `internal/verify` | the gate every assertion above comes from |
 | `internal/fixtures` | every checked-in fixture, and the deterministic build of each artifact |
 
+[`docs/WALKTHROUGH.md`](docs/WALKTHROUGH.md) is the guided tour, and the place to start.
 [`docs/RESOLVER.md`](docs/RESOLVER.md) documents both resolver models in full: the ordering rule, the
 tie rule, the lock fields, the stable error classes, and the three half-fixes.
 [`docs/TRANSCRIPT.md`](docs/TRANSCRIPT.md) documents the transcript, the registry receipt boundary,
